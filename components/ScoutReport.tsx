@@ -15,10 +15,9 @@ import {
   Users,
   Zap,
 } from "lucide-react";
-import type { Card, Finish, Metric, Playstyle } from "@/lib/scoring/types";
+import type { Card, Metric, Playstyle } from "@/lib/scoring/types";
 import { languageLogoUrl } from "@/lib/languages";
 import { formatCount } from "@/lib/format";
-import { deEmDash } from "@/lib/text";
 import { resolveResultTheme } from "./finishTheme";
 
 const PLAYSTYLE_ICONS: Record<string, LucideIcon> = {
@@ -38,16 +37,6 @@ const PLAYSTYLE_ICONS: Record<string, LucideIcon> = {
 // Hide a logo/image that fails to load (e.g. a CDN miss) rather than show a broken icon.
 const hideOnError: React.ReactEventHandler<HTMLImageElement> = (e) => {
   e.currentTarget.style.display = "none";
-};
-
-// The scout's one-line verdict — the signature, in recruitment vernacular.
-const VERDICTS: Record<Finish, string> = {
-  icon: "Generational talent",
-  toty: "Elite prospect",
-  totw: "In-form, in demand",
-  gold: "First-team ready",
-  silver: "Squad rotation",
-  bronze: "One to watch",
 };
 
 // Lightweight hover popup explaining why a value was given.
@@ -304,20 +293,6 @@ export function ReportHeader({ card }: { card: Card }) {
               )}
             </span>
           </div>
-        </Stagger>
-
-        {/* verdict inline: label + grade, then the blurb continues the sentence.
-            line-clamp-3 (not reserved height — only clips when actually needed)
-            so narrow phones get a 3rd line instead of cutting the sentence off
-            mid-word; blurbs are short enough to still land in 1-2 lines everywhere
-            else. Fluid text size fits more per line before the clamp kicks in. */}
-        <Stagger step={3}>
-          <p className="mt-[9px] line-clamp-3 text-[clamp(12.5px,3.2vw,13.5px)] leading-[1.5] text-ink-soft">
-            <span className="font-display mr-[7px] text-[11px] font-bold tracking-[.18em]" style={{ color: accent }}>
-              {VERDICTS[card.finish].toUpperCase()}
-            </span>
-            {deEmDash(card.archetypeBlurb)}.
-          </p>
         </Stagger>
       </div>
     </header>

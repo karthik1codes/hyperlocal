@@ -1,6 +1,7 @@
 import "server-only";
 import { createBentoSdk, walletAuthProvider, type PublicDuelDetail, type PublicDuelSummary } from "@bento.fun/sdk";
 import { bentoBaseUrl, bentoBuilderApiKey } from "./config";
+import { isMarketTradeable } from "./tradeable";
 
 export type ScoutErrorType = "invalid" | "notfound" | "ratelimit" | "network" | "config";
 
@@ -73,7 +74,7 @@ function mapSdkError(e: unknown): ScoutError {
  * List live public markets via sdk.public.listDuels (Bento markets host).
  * @see https://docs.bento.fun/typescript-sdk#sdkpublic-markets-host
  */
-export async function listMarkets(limit = 8): Promise<PublicDuelSummary[]> {
+export async function listMarkets(limit = 8): Promise<BentoDuel[]> {
   try {
     const sdk = publicSdk();
     const pageSize = Math.min(100, Math.max(limit * 6, 40));
@@ -177,7 +178,36 @@ export async function listMarkets(limit = 8): Promise<PublicDuelSummary[]> {
       return /sport|soccer|football|fifa|epl|ucl|premier|world.?cup|nba|nfl/i.test(cat);
     });
 
-    return (sports.length >= Math.min(3, limit) ? sports : unique).slice(0, limit);
+    const shortlist = (sports.length >= Math.min(3, limit) ? sports : unique).slice(
+      0,
+      Math.max(limit * 4, 12),
+    );
+
+    // listDuels sometimes omits/stales `status`; confirm with getDuelById so
+    // home never offers status=-1 markets that 500 on placeBet.
+    const verified: BentoDuel[] = [];
+    const details = await Promise.all(
+      shortlist.map(async (row) => {
+        try {
+          return await fetchMarket(row.duelId);
+        } catch {
+          return null;
+        }
+      }),
+    );
+    for (const detail of details) {
+      if (!detail) continue;
+      const check = isMarketTradeable({
+        status: detail.status,
+        endsIn: detail.endsIn,
+        duelType: detail.duelType,
+      });
+      if (!check.ok) continue;
+      verified.push(detail);
+      if (verified.length >= limit) break;
+    }
+
+    return verified;
   } catch (e) {
     console.error("[bento] listMarkets failed:", (e as Error).message);
     throw mapSdkError(e);

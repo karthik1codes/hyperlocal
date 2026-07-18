@@ -2,7 +2,6 @@ import { ImageResponse } from "next/og";
 import { after } from "next/server";
 import { scoutCard } from "@/lib/scout";
 import { pickFlag } from "@/lib/flagPriority";
-import { deEmDash } from "@/lib/text";
 import { recordScout } from "@/lib/analytics";
 import { loadCardAssets, cardTree } from "@/lib/og/renderCard";
 import { loadCardFonts } from "@/lib/og/card";
@@ -120,9 +119,6 @@ export default async function Image({ params }: { params: Promise<{ username: st
             </span>
             <span style={{ display: "flex", color: "#6e7681", margin: "0 14px" }}>·</span>
             <span style={{ display: "flex", color: "#c9d1d9" }}>{card.archetype}</span>
-          </div>
-          <div style={{ display: "flex", fontSize: 30, color: "#a8b3bd", marginTop: 22, lineHeight: 1.3, maxWidth: 600 }}>
-            {deEmDash(card.archetypeBlurb)}.
           </div>
           <div style={{ display: "flex", fontSize: 26, color: "#6e7681", marginTop: 32 }}>bento.fun/{card.login}</div>
         </div>

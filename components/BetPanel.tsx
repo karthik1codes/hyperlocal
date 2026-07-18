@@ -1,7 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import type { Card } from "@/lib/scoring/types";
+import { isMarketTradeable } from "@/lib/bento/tradeable";
 import { useBentoWallet } from "@/hooks/useBentoWallet";
 import WalletSession from "@/components/WalletSession";
 import { BETS_CHANGED_EVENT } from "@/components/BetsSidebar";
@@ -47,21 +49,26 @@ export default function BetPanel({ card: initialCard }: { card: Card }) {
 
   const marketWarning = useMemo(() => {
     if (!market || !canPlaceOnChain) return null;
-    const status = Number(market.status ?? 0);
-    if (status < 0) {
-      return `This market is paused/invalid on Bento (status=${status}) — placeBet will fail. Open a live credits market from home.`;
-    }
-    if (status >= 2) return `Market status=${status} looks closed.`;
+    const check = isMarketTradeable({
+      status: market.status,
+      endsIn: market.endsIn,
+      duelType: market.duelType,
+    });
+    if (!check.ok) return check.reason;
     const ends = Number(market.endsIn ?? 0);
-    // endsIn is seconds remaining
-    if (ends <= 0) return "This market has ended — bets will fail.";
-    if (ends < 60) {
-      return `Market expires in ${ends}s — late bets usually HTTP 500 on testnet.`;
-    }
     if (ends < 3600) {
       return `Only ~${Math.round(ends / 60)} min left — prefer a market with more runway.`;
     }
     return null;
+  }, [market, canPlaceOnChain]);
+
+  const marketBlocked = useMemo(() => {
+    if (!market || !canPlaceOnChain) return false;
+    return !isMarketTradeable({
+      status: market.status,
+      endsIn: market.endsIn,
+      duelType: market.duelType,
+    }).ok;
   }, [market, canPlaceOnChain]);
 
   const options = useMemo(() => {
@@ -395,7 +402,12 @@ export default function BetPanel({ card: initialCard }: { card: Card }) {
     }
   };
 
-  const showTradeUi = isLoggedIn && (canPlaceOnChain || isLocal) && !isPolymarket && !isDemo;
+  const showTradeUi =
+    isLoggedIn &&
+    (canPlaceOnChain || isLocal) &&
+    !isPolymarket &&
+    !isDemo &&
+    !marketBlocked;
 
   return (
     <div className="mt-3 w-full rounded-xl border border-line bg-white/[0.03] p-4">
@@ -446,7 +458,17 @@ export default function BetPanel({ card: initialCard }: { card: Card }) {
         <p className="mt-2 text-[11.5px] leading-snug text-ink-soft">{creditsHint}</p>
       )}
       {marketWarning && (
-        <p className="mt-2 text-[11.5px] leading-snug text-gold-hi">{marketWarning}</p>
+        <div className="mt-2 rounded-lg border border-gold-hi/30 bg-gold-hi/10 px-3 py-2.5">
+          <p className="text-[12px] leading-snug text-gold-hi">{marketWarning}</p>
+          {marketBlocked && (
+            <Link
+              href="/"
+              className="font-display mt-2 inline-flex h-9 items-center rounded-md bg-brand px-3 text-[12px] tracking-wide text-[#04130a] hover:bg-brand-hi"
+            >
+              BROWSE LIVE MARKETS
+            </Link>
+          )}
+        </div>
       )}
 
       {isDemo && (

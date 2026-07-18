@@ -9,8 +9,8 @@ import type { Card } from "./scoring/types";
 // Re-export error type so routes keep importing from scout / github shim.
 export type { ScoutError } from "./bento/scout-bridge";
 
-const CACHE_VERSION = "v2-bento";
-const CARD_TTL_SECONDS = 30 * 60; // markets move faster than static profiles
+const CACHE_VERSION = "v3-bento-tradeable";
+const CARD_TTL_SECONDS = 10 * 60; // markets flip status quickly on testnet
 
 const normalizeLogin = (username: string) => username.trim().replace(/^@/, "").toLowerCase();
 const keyFor = (login: string) => `bento:card:${CACHE_VERSION}:${login}`;
@@ -39,7 +39,22 @@ const inflight = new Map<string, Promise<Card>>();
 
 async function buildFresh(username: string, login: string): Promise<Card> {
   const card = await fetchMarket(username);
-  await writeCache(login, card);
+  // Don't cache paused/invalid markets — users kept landing on status=-1 cards.
+  const { isMarketTradeable } = await import("./bento/tradeable");
+  const m = card.market;
+  const tradeable =
+    !m ||
+    m.source === "polymarket" ||
+    m.source === "local" ||
+    login.startsWith("demo-") ||
+    login.startsWith("local-") ||
+    login.startsWith("pm-") ||
+    isMarketTradeable({
+      status: m.status,
+      endsIn: m.endsIn,
+      duelType: m.duelType,
+    }).ok;
+  if (tradeable) await writeCache(login, card);
   return card;
 }
 
@@ -95,7 +110,7 @@ export const loadCard = cache(
  * so /markets never hangs on a slow listDuels.
  */
 export async function loadHomeCards(limit = 8): Promise<Card[]> {
-  const TIMEOUT_MS = 4_500;
+  const TIMEOUT_MS = 12_000;
   try {
     const { listMarketCards } = await import("./bento/scout-bridge");
     const cards = await new Promise<Card[]>((resolve, reject) => {
