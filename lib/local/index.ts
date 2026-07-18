@@ -5,8 +5,6 @@ import { findExistingLocalPrediction, saveLocalPrediction } from "./store";
 import { canResearchNews } from "./config";
 import {
   draftCardWithOpenAI,
-  generateCardImageWithOpenAI,
-  generateScenePortraitWithOpenAI,
   hasOpenAICredentials,
   speakLocalProblemWithOpenAI,
   summarizeLocalProblemForCrawl,
@@ -14,6 +12,7 @@ import {
 import { emitProgress, type ResearchProgress } from "./progress";
 import { embedRemoteImageAsDataUrl } from "@/lib/media/embedImage";
 import { cardHasDisplayArt } from "@/lib/media/photoAvatar";
+import { hasAnakinCredentials } from "./config";
 
 export type { LocalPredictionBundle };
 export type { ResearchProgressEvent, ResearchStepId } from "./progress";
@@ -135,7 +134,14 @@ export async function createHyperLocalPrediction(input: {
 
   emitProgress(input.onProgress, "card", "Scoring hyper-local card…");
 
-  // Resolve a problem-related photo (Anakin / OG / Wikipedia) before scoring art
+  // Story photos come from Anakin (images/screenshot scrape) — not OpenAI image gen
+  if (!hasAnakinCredentials()) {
+    emitProgress(
+      input.onProgress,
+      "extract",
+      "Tip: set ANAKIN_API_KEY so Anakin can pull story photos onto the card",
+    );
+  }
   const { resolveStoryImage } = await import("./story-image");
   const resolvedImage = await resolveStoryImage({
     region,
@@ -154,37 +160,11 @@ export async function createHyperLocalPrediction(input: {
     draft,
   });
 
-  // Always keep the crawled source photo on the card when present
-  let sourceImage =
+  const sourceImage =
     hit.imageUrl && hit.imageUrl.startsWith("http") ? hit.imageUrl : null;
 
-  // If crawl found nothing, paint a scene portrait so the plate isn't "LOCAL"
-  if (!sourceImage && hasOpenAICredentials()) {
-    emitProgress(input.onProgress, "gemini", "Generating story scene photo…");
-    const painted = await generateScenePortraitWithOpenAI({
-      region,
-      topic,
-      hit,
-      draft,
-    });
-    if (painted) {
-      sourceImage = painted;
-      hit = { ...hit, imageUrl: painted.startsWith("http") ? painted : hit.imageUrl };
-      bundle = {
-        ...bundle,
-        card: {
-          ...bundle.card,
-          avatarUrl: painted,
-          cardImageUrl: null,
-        },
-        hit,
-      };
-      emitProgress(input.onProgress, "card", "Story scene ready for plate");
-    }
-  }
-
-  if (sourceImage && !sourceImage.startsWith("data:")) {
-    emitProgress(input.onProgress, "card", "Pasting story photo onto card…");
+  if (sourceImage) {
+    emitProgress(input.onProgress, "card", "Pasting Anakin story photo onto card…");
     const embedded = await embedRemoteImageAsDataUrl(sourceImage);
     const avatarUrl =
       embedded && embedded.length <= 120_000 ? embedded : sourceImage;
@@ -197,52 +177,13 @@ export async function createHyperLocalPrediction(input: {
       },
       hit,
     };
-  } else if (sourceImage?.startsWith("data:")) {
-    bundle = {
-      ...bundle,
-      card: {
-        ...bundle.card,
-        avatarUrl: sourceImage,
-        cardImageUrl: null,
-      },
-      hit,
-    };
-  }
-
-  // Full AI plate only when we still have no usable portrait
-  if (hasOpenAICredentials() && !cardHasDisplayArt(bundle.card)) {
-    emitProgress(input.onProgress, "gemini", "Painting FUT card with story scene…");
-    const cardImageUrl = await generateCardImageWithOpenAI({
-      region,
-      topic,
-      hit,
-      draft,
-      card: {
-        name: bundle.card.name,
-        overall: bundle.card.overall,
-        position: bundle.card.position,
-        country: bundle.card.country,
-        finishLabel: bundle.card.finishLabel,
-        stats: bundle.card.stats,
-      },
-    });
-    if (cardImageUrl) {
-      bundle = {
-        ...bundle,
-        card: {
-          ...bundle.card,
-          cardImageUrl,
-          // clear LOCAL placeholder so GeminiCard is allowed to render
-          avatarUrl: "",
-        },
-        hit,
-      };
-      emitProgress(input.onProgress, "gemini", "Card art ready");
-    } else {
-      emitProgress(input.onProgress, "gemini", "Opening scored card");
-    }
-  } else if (cardHasDisplayArt(bundle.card) && !bundle.card.cardImageUrl) {
-    emitProgress(input.onProgress, "card", "Story photo pasted on FUT plate");
+    emitProgress(input.onProgress, "card", "Story photo on FUT plate");
+  } else if (!cardHasDisplayArt(bundle.card)) {
+    emitProgress(
+      input.onProgress,
+      "card",
+      "No photo from Anakin — card will use plate without portrait. Check ANAKIN_API_KEY / scrape.",
+    );
   }
 
   let audioUrl: string | null = null;

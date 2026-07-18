@@ -3,6 +3,8 @@ import type { LocalNewsHit } from "./types";
 import { hasAnakinCredentials, anakinApiKey } from "./config";
 import { emitProgress, type ResearchProgress } from "./progress";
 
+const ANAKIN_BASE = "https://api.anakin.io/v1";
+
 function absUrl(href: string | null | undefined, base: string): string | null {
   if (!href) return null;
   try {
@@ -20,14 +22,61 @@ function hostOf(url: string): string | null {
   }
 }
 
-function looksLikeImageUrl(url: string): boolean {
+function anakinHeaders(): HeadersInit {
+  const key = anakinApiKey();
+  if (!key) throw new Error("ANAKIN_API_KEY missing");
+  return {
+    "X-API-Key": key,
+    "Content-Type": "application/json",
+    Accept: "application/json",
+  };
+}
+
+export function looksLikeImageUrl(url: string): boolean {
   if (!/^https?:\/\//i.test(url)) return false;
   if (/\/\/(logo|icon|sprite|avatar|gravatar|tracking|pixel)\./i.test(url)) return false;
   if (/\.(svg)(\?|$)/i.test(url) && /logo|icon/i.test(url)) return false;
   return true;
 }
 
-/** Pull og:image / twitter:image / first large img from an article HTML page. */
+function pickFromAnakinDoc(data: {
+  images?: Array<string | { url?: string }>;
+  screenshotUrl?: string;
+  fullPageScreenshotUrl?: string;
+  ogImage?: string;
+  image?: string;
+  markdown?: string;
+  html?: string;
+}): string | null {
+  if (typeof data.ogImage === "string" && looksLikeImageUrl(data.ogImage)) return data.ogImage;
+  if (typeof data.image === "string" && looksLikeImageUrl(data.image)) return data.image;
+  if (typeof data.screenshotUrl === "string" && looksLikeImageUrl(data.screenshotUrl)) {
+    return data.screenshotUrl;
+  }
+  if (
+    typeof data.fullPageScreenshotUrl === "string" &&
+    looksLikeImageUrl(data.fullPageScreenshotUrl)
+  ) {
+    return data.fullPageScreenshotUrl;
+  }
+  if (Array.isArray(data.images)) {
+    for (const item of data.images) {
+      const u = typeof item === "string" ? item : item?.url;
+      if (u && looksLikeImageUrl(u)) return u;
+    }
+  }
+  const blob = `${data.markdown || ""}\n${data.html || ""}`;
+  const mdImg = blob.match(/!\[[^\]]*\]\((https?:\/\/[^)\s]+)\)/i);
+  if (mdImg?.[1] && looksLikeImageUrl(mdImg[1])) return mdImg[1];
+  const og = blob.match(
+    /og:image[^>"']*["'](https?:\/\/[^"']+)["']|(https?:\/\/[^\s"'<>]+\.(?:jpg|jpeg|png|webp)(?:\?[^\s"'<>]*)?)/i,
+  );
+  const candidate = og?.[1] || og?.[2];
+  if (candidate && looksLikeImageUrl(candidate)) return candidate;
+  return null;
+}
+
+/** Pull og:image from article HTML (HTTP fallback when Anakin is down). */
 export async function extractOgImageFromUrl(pageUrl: string): Promise<string | null> {
   if (!pageUrl.startsWith("http")) return null;
   try {
@@ -49,21 +98,11 @@ export async function extractOgImageFromUrl(pageUrl: string): Promise<string | n
       /<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image(?::secure_url)?["']/i,
       /<meta[^>]+name=["']twitter:image(?::src)?["'][^>]+content=["']([^"']+)["']/i,
       /<meta[^>]+content=["']([^"']+)["'][^>]+name=["']twitter:image(?::src)?["']/i,
-      /<link[^>]+rel=["']image_src["'][^>]+href=["']([^"']+)["']/i,
     ];
     for (const re of patterns) {
       const m = body.match(re);
       const abs = absUrl(m?.[1], finalUrl);
       if (abs && looksLikeImageUrl(abs)) return abs;
-    }
-    // First reasonably sized content image
-    const imgRe = /<img[^>]+src=["']([^"']+)["'][^>]*>/gi;
-    let m: RegExpExecArray | null;
-    while ((m = imgRe.exec(body))) {
-      const abs = absUrl(m[1], finalUrl);
-      if (!abs || !looksLikeImageUrl(abs)) continue;
-      if (/logo|icon|sprite|1x1|pixel|badge|avatar/i.test(abs)) continue;
-      return abs;
     }
   } catch {
     /* ignore */
@@ -71,62 +110,170 @@ export async function extractOgImageFromUrl(pageUrl: string): Promise<string | n
   return null;
 }
 
-/** Anakin scrape — ask for markdown/html and mine image URLs. */
+/**
+ * Anakin scrape with explicit `images` + `screenshot` formats
+ * @see https://github.com/Anakin-Inc/anakin-node — formats include images, screenshot
+ */
 export async function extractImageViaAnakin(pageUrl: string): Promise<string | null> {
   if (!hasAnakinCredentials() || !pageUrl.startsWith("http")) return null;
-  const key = anakinApiKey();
-  if (!key) return null;
 
-  try {
-    const res = await fetch("https://api.anakin.io/v1/scrape", {
-      method: "POST",
-      headers: {
-        "X-API-Key": key,
-        "Content-Type": "application/json",
-        Accept: "application/json",
-      },
-      body: JSON.stringify({
-        url: pageUrl,
-        formats: ["markdown", "html", "summary"],
-        useBrowser: false,
-        country: "in",
-      }),
-      cache: "no-store",
-      signal: AbortSignal.timeout(40_000),
-    });
-    if (!res.ok) return null;
-    const data = (await res.json()) as {
-      markdown?: string;
-      html?: string;
-      images?: Array<string | { url?: string }>;
-      ogImage?: string;
-      image?: string;
-    };
+  const attempts: Array<{ useBrowser: boolean; label: string }> = [
+    { useBrowser: false, label: "http" },
+    { useBrowser: true, label: "browser" },
+  ];
 
-    if (typeof data.ogImage === "string" && looksLikeImageUrl(data.ogImage)) return data.ogImage;
-    if (typeof data.image === "string" && looksLikeImageUrl(data.image)) return data.image;
-    if (Array.isArray(data.images)) {
-      for (const item of data.images) {
-        const u = typeof item === "string" ? item : item?.url;
-        if (u && looksLikeImageUrl(u)) return u;
+  for (const attempt of attempts) {
+    try {
+      const res = await fetch(`${ANAKIN_BASE}/scrape`, {
+        method: "POST",
+        headers: anakinHeaders(),
+        body: JSON.stringify({
+          url: pageUrl,
+          formats: ["images", "screenshot", "markdown", "html", "summary"],
+          useBrowser: attempt.useBrowser,
+          country: "in",
+        }),
+        cache: "no-store",
+        signal: AbortSignal.timeout(55_000),
+      });
+
+      if (!res.ok) {
+        // Async job path
+        if (res.status === 404 || res.status === 405 || res.status === 408) {
+          const asyncImg = await extractImageViaAnakinAsync(pageUrl, attempt.useBrowser);
+          if (asyncImg) return asyncImg;
+        }
+        console.warn(
+          `[story-image] anakin scrape ${attempt.label} HTTP ${res.status}`,
+        );
+        continue;
       }
-    }
 
-    const blob = `${data.markdown || ""}\n${data.html || ""}`;
-    const mdImg = blob.match(/!\[[^\]]*\]\((https?:\/\/[^)\s]+)\)/i);
-    if (mdImg?.[1] && looksLikeImageUrl(mdImg[1])) return mdImg[1];
-    const og = blob.match(
-      /og:image[^>"']*["'](https?:\/\/[^"']+)["']|(https?:\/\/[^\s"'<>]+\.(?:jpg|jpeg|png|webp))/i,
-    );
-    const candidate = og?.[1] || og?.[2];
-    if (candidate && looksLikeImageUrl(candidate)) return candidate;
-  } catch (e) {
-    console.warn("[story-image] anakin scrape:", e instanceof Error ? e.message : e);
+      const data = (await res.json()) as Parameters<typeof pickFromAnakinDoc>[0] & {
+        status?: string;
+        id?: string;
+        jobId?: string;
+      };
+
+      const picked = pickFromAnakinDoc(data);
+      if (picked) return picked;
+
+      const jobId = data.jobId || data.id;
+      if (jobId && (data.status === "pending" || data.status === "processing")) {
+        const polled = await pollAnakinScrapeImages(jobId);
+        if (polled) return polled;
+      }
+    } catch (e) {
+      console.warn(
+        `[story-image] anakin scrape ${attempt.label}:`,
+        e instanceof Error ? e.message : e,
+      );
+    }
   }
   return null;
 }
 
-/** Wikipedia page thumbnail related to region + topic (last-resort scene photo). */
+async function extractImageViaAnakinAsync(
+  pageUrl: string,
+  useBrowser: boolean,
+): Promise<string | null> {
+  try {
+    const res = await fetch(`${ANAKIN_BASE}/url-scraper`, {
+      method: "POST",
+      headers: anakinHeaders(),
+      body: JSON.stringify({
+        url: pageUrl,
+        formats: ["images", "screenshot", "markdown", "html"],
+        useBrowser,
+        country: "in",
+      }),
+      cache: "no-store",
+      signal: AbortSignal.timeout(20_000),
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as { jobId?: string; id?: string };
+    const jobId = data.jobId || data.id;
+    if (!jobId) return null;
+    return pollAnakinScrapeImages(jobId);
+  } catch {
+    return null;
+  }
+}
+
+async function pollAnakinScrapeImages(jobId: string): Promise<string | null> {
+  for (let i = 0; i < 10; i++) {
+    await new Promise((r) => setTimeout(r, 1500));
+    try {
+      const res = await fetch(`${ANAKIN_BASE}/url-scraper/${encodeURIComponent(jobId)}`, {
+        headers: anakinHeaders(),
+        cache: "no-store",
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (!res.ok) continue;
+      const data = (await res.json()) as Parameters<typeof pickFromAnakinDoc>[0] & {
+        status?: string;
+      };
+      if (data.status === "failed") return null;
+      if (data.status === "completed" || data.images || data.screenshotUrl || data.markdown) {
+        const picked = pickFromAnakinDoc(data);
+        if (picked) return picked;
+        if (data.status === "completed") return null;
+      }
+    } catch {
+      /* retry */
+    }
+  }
+  return null;
+}
+
+/**
+ * Anakin web search aimed at finding a news photo for the local problem.
+ */
+export async function searchImageViaAnakin(
+  region: string,
+  topic: string,
+): Promise<string | null> {
+  if (!hasAnakinCredentials()) return null;
+  try {
+    const prompt = `${region} ${topic} — find a recent news article with a photo about this local story. Prefer image URLs.`;
+    const res = await fetch(`${ANAKIN_BASE}/search`, {
+      method: "POST",
+      headers: anakinHeaders(),
+      body: JSON.stringify({ prompt, limit: 8 }),
+      cache: "no-store",
+      signal: AbortSignal.timeout(45_000),
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as {
+      results?: Array<{
+        url?: string;
+        title?: string;
+        image?: string;
+        imageUrl?: string;
+        thumbnail?: string;
+        ogImage?: string;
+      }>;
+    };
+    const results = Array.isArray(data.results) ? data.results : [];
+    for (const r of results) {
+      for (const key of ["image", "imageUrl", "thumbnail", "ogImage"] as const) {
+        const u = r[key];
+        if (typeof u === "string" && looksLikeImageUrl(u)) return u;
+      }
+    }
+    // Scrape top result pages for images via Anakin
+    for (const r of results.slice(0, 3)) {
+      if (!r.url?.startsWith("http")) continue;
+      const img = await extractImageViaAnakin(r.url);
+      if (img) return img;
+    }
+  } catch (e) {
+    console.warn("[story-image] anakin image search:", e instanceof Error ? e.message : e);
+  }
+  return null;
+}
+
+/** Wikipedia page thumbnail — last resort, not Anakin. */
 export async function wikipediaThumbForTopic(
   region: string,
   topic: string,
@@ -166,8 +313,8 @@ export async function wikipediaThumbForTopic(
 }
 
 /**
- * Resolve a photo that matches the hyper-local problem for the card portrait.
- * Prefer article OG → Anakin scrape → Wikipedia thumb.
+ * Resolve a photo for the card portrait — Anakin first (images/screenshot scrape
+ * + image search). No OpenAI image generation.
  */
 export async function resolveStoryImage(input: {
   hit: LocalNewsHit;
@@ -181,36 +328,59 @@ export async function resolveStoryImage(input: {
     return hit.imageUrl;
   }
 
-  emitProgress(onProgress, "extract", "Finding story photo…");
+  const hasAnakin = hasAnakinCredentials();
+  if (!hasAnakin) {
+    emitProgress(
+      onProgress,
+      "extract",
+      "No ANAKIN_API_KEY — set it so Anakin can pull story photos",
+    );
+  }
 
-  if (hit.url.startsWith("http")) {
-    const og = await extractOgImageFromUrl(hit.url);
-    if (og) {
-      emitProgress(onProgress, "extract", "Article photo found", hostOf(og) || undefined);
-      return og;
+  // 1) Anakin scrape of the primary article (images + screenshot formats)
+  if (hasAnakin && hit.url.startsWith("http")) {
+    emitProgress(onProgress, "extract", "Anakin fetching page images…");
+    const viaAnakin = await extractImageViaAnakin(hit.url);
+    if (viaAnakin) {
+      emitProgress(onProgress, "extract", "Anakin image ready", hostOf(viaAnakin) || undefined);
+      return viaAnakin;
     }
+  }
 
-    if (hasAnakinCredentials()) {
-      emitProgress(onProgress, "extract", "Anakin pulling page images…");
-      const viaAnakin = await extractImageViaAnakin(hit.url);
-      if (viaAnakin) {
-        emitProgress(onProgress, "extract", "Anakin image ready", hostOf(viaAnakin) || undefined);
-        return viaAnakin;
+  // 2) Anakin scrape of corroborating news sources
+  if (hasAnakin) {
+    for (const src of hit.sources || []) {
+      if (src.kind !== "news" || !src.url?.startsWith("http")) continue;
+      if (src.url === hit.url) continue;
+      emitProgress(onProgress, "extract", "Anakin checking related source…");
+      const img = await extractImageViaAnakin(src.url);
+      if (img) {
+        emitProgress(onProgress, "extract", "Anakin image from related source");
+        return img;
       }
     }
   }
 
-  // Also try first corroborating news source URL
-  for (const src of hit.sources || []) {
-    if (src.kind !== "news" || !src.url?.startsWith("http")) continue;
-    if (src.url === hit.url) continue;
-    const og = await extractOgImageFromUrl(src.url);
+  // 3) Anakin search specifically for a photo of this local problem
+  if (hasAnakin) {
+    emitProgress(onProgress, "extract", "Anakin searching for story photo…");
+    const searched = await searchImageViaAnakin(region, topic);
+    if (searched) {
+      emitProgress(onProgress, "extract", "Anakin photo search hit");
+      return searched;
+    }
+  }
+
+  // 4) Light HTTP og:image (no OpenAI)
+  if (hit.url.startsWith("http")) {
+    const og = await extractOgImageFromUrl(hit.url);
     if (og) {
-      emitProgress(onProgress, "extract", "Photo from related source");
+      emitProgress(onProgress, "extract", "Article OG photo found", hostOf(og) || undefined);
       return og;
     }
   }
 
+  // 5) Wikipedia thumb last resort
   emitProgress(onProgress, "extract", "Looking up related scene photo…");
   const wiki = await wikipediaThumbForTopic(region, topic);
   if (wiki) {
@@ -218,6 +388,12 @@ export async function resolveStoryImage(input: {
     return wiki;
   }
 
-  emitProgress(onProgress, "extract", "No story photo found");
+  emitProgress(
+    onProgress,
+    "extract",
+    hasAnakin
+      ? "Anakin found no photo for this story"
+      : "No story photo — add ANAKIN_API_KEY to enable Anakin image fetch",
+  );
   return null;
 }

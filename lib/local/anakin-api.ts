@@ -97,12 +97,12 @@ export async function researchViaAnakinSearch(input: {
 
   emitProgress(input.onProgress, "extract", "Anakin summary ready");
 
-  // Pull a real article photo so the FUT card isn't an empty silhouette
+  // Anakin first for images (formats: images + screenshot), then OG
   let imageUrl: string | null = null;
   try {
-    const { extractOgImageFromUrl, extractImageViaAnakin } = await import("./story-image");
-    imageUrl = await extractOgImageFromUrl(top.url);
-    if (!imageUrl) imageUrl = await extractImageViaAnakin(top.url);
+    const { extractImageViaAnakin, extractOgImageFromUrl } = await import("./story-image");
+    imageUrl = await extractImageViaAnakin(top.url);
+    if (!imageUrl) imageUrl = await extractOgImageFromUrl(top.url);
   } catch (e) {
     console.warn("[anakin/search] image:", e instanceof Error ? e.message : e);
   }
@@ -136,7 +136,7 @@ export async function summarizeHitWithAnakin(
       headers: headers(),
       body: JSON.stringify({
         url: hit.url,
-        formats: ["summary", "markdown", "html"],
+        formats: ["images", "screenshot", "summary", "markdown", "html"],
         useBrowser: false,
         country: "in",
       }),
