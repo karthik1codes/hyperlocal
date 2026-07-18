@@ -34,10 +34,6 @@ function getSpeechRecognition(): (new () => SpeechRecognitionLike) | null {
 const EXAMPLES = [
   {
     region: "Chennai",
-    topic: "IIT Madras tuition fee hike this year",
-  },
-  {
-    region: "Chennai",
     topic: "Will Chennai Metro Phase 2 open for the public before December?",
   },
   {
