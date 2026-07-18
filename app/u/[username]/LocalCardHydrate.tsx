@@ -4,32 +4,66 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import ScoutRoute from "./ScoutRoute";
 import { readCardCache, writeCardCache } from "@/hooks/useScout";
+import { isUsablePhotoAvatar } from "@/lib/media/photoAvatar";
 import type { Card } from "@/lib/scoring/types";
+
+function mergePhoto(serverOrNull: Card | null, cached: Card | null): Card | null {
+  if (!serverOrNull && !cached) return null;
+  if (!serverOrNull) return cached;
+  if (!cached) return serverOrNull;
+  // Prefer whichever has a real story photo
+  if (isUsablePhotoAvatar(serverOrNull.avatarUrl)) return serverOrNull;
+  if (isUsablePhotoAvatar(cached.avatarUrl)) {
+    return {
+      ...serverOrNull,
+      avatarUrl: cached.avatarUrl,
+      cardImageUrl: cached.cardImageUrl ?? null,
+    };
+  }
+  return serverOrNull;
+}
 
 /**
  * When Redis/memory miss on Vercel, recover the card the lab just wrote to
- * localStorage and re-persist it server-side so publish/bet still works.
+ * localStorage (including the story photo) and re-persist it server-side.
  */
-export default function LocalCardHydrate({ login }: { login: string }) {
+export default function LocalCardHydrate({
+  login,
+  serverCard = null,
+}: {
+  login: string;
+  /** Optional card from server that may be missing the photo. */
+  serverCard?: Card | null;
+}) {
   const [card, setCard] = useState<Card | null>(null);
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
     const id = login.trim().replace(/^@/, "").toLowerCase();
     const cached = readCardCache(id);
-    if (cached?.market) {
-      writeCardCache(cached);
-      setCard(cached);
+    const merged = mergePhoto(serverCard, cached);
+    if (merged?.market) {
+      writeCardCache(merged);
+      setCard(merged);
       void fetch("/api/local/persist", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ card: cached }),
+        body: JSON.stringify({
+          card: merged,
+          hit: {
+            title: merged.market.question || merged.name,
+            url: merged.market.externalUrl || "",
+            sourceHost: "local",
+            summary: merged.market.description || "",
+            imageUrl: merged.avatarUrl?.startsWith("http") ? merged.avatarUrl : null,
+          },
+        }),
       }).catch(() => {
         /* best-effort */
       });
     }
     setReady(true);
-  }, [login]);
+  }, [login, serverCard]);
 
   if (!ready) {
     return (
@@ -61,7 +95,7 @@ export default function LocalCardHydrate({ login }: { login: string }) {
         Bento market and place credits.
       </p>
       <Link
-        href="/local"
+        href="/"
         className="font-display mt-7 inline-flex h-[46px] items-center rounded-xl bg-brand px-6 text-[16px] tracking-[.06em] text-[#04130a] transition hover:bg-brand-hi"
       >
         BACK TO HYPER-LOCAL LAB

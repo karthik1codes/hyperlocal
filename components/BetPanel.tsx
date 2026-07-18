@@ -7,7 +7,13 @@ import { isMarketTradeable } from "@/lib/bento/tradeable";
 import { useBentoWallet } from "@/hooks/useBentoWallet";
 import WalletSession from "@/components/WalletSession";
 import { BETS_CHANGED_EVENT } from "@/components/BetsSidebar";
-import { markLocalCardWarming } from "@/lib/local/made-cards";
+import { listLocalMadeCards, markLocalCardWarming } from "@/lib/local/made-cards";
+import { applyStakeToCard } from "@/lib/bento/merge-live-card";
+import { preferMarketDisplayCategory } from "@/lib/bento/category";
+import {
+  dispatchMarketLive,
+  ensureNotifyPermission,
+} from "@/lib/notify-live";
 
 /** Platform floor from https://docs.bento.fun/guides/place-bet */
 const MIN_BET = 5;
@@ -24,7 +30,14 @@ type Quote = {
   priceImpact: number;
 };
 
-export default function BetPanel({ card: initialCard }: { card: Card }) {
+export default function BetPanel({
+  card: initialCard,
+  onCardChange,
+}: {
+  card: Card;
+  /** Keep scout report metrics/attributes in sync with create & bet. */
+  onCardChange?: (card: Card) => void;
+}) {
   const [card, setCard] = useState(initialCard);
   const market = card.market;
   const wallet = useBentoWallet();
@@ -41,12 +54,17 @@ export default function BetPanel({ card: initialCard }: { card: Card }) {
 
   const [opensAt, setOpensAt] = useState<number | null>(null);
   const [waitLabel, setWaitLabel] = useState<string | null>(null);
+  const [liveBanner, setLiveBanner] = useState<string | null>(null);
 
   const isPolymarket = market?.source === "polymarket";
   const isLocal =
     market?.source === "local" || Boolean(market?.duelId?.startsWith("local-"));
   const isDemo = Boolean(market?.duelId?.startsWith("demo-"));
   const canPlaceOnChain = Boolean(market && !isPolymarket && !isLocal && !isDemo);
+  /** Bento private markets open ~5–6 min after create (on-chain startTime floor). */
+  const marketWarming = Boolean(opensAt && opensAt > Date.now());
+  /** Hold the tab when open is close (matches server placeBet wait ≤ ~2 min). */
+  const SHORT_WAIT_MS = 120_000;
 
   const marketWarning = useMemo(() => {
     if (!market || !canPlaceOnChain) return null;
@@ -71,6 +89,15 @@ export default function BetPanel({ card: initialCard }: { card: Card }) {
       duelType: market.duelType,
     }).ok;
   }, [market, canPlaceOnChain]);
+
+  const isDeadLivePrediction =
+    card.login.startsWith("local-") &&
+    market != null &&
+    !market.duelId.startsWith("local-") &&
+    Number(market.status) < 0;
+
+  /** Your hyper-local card — keep stake UI even if Bento cancelled the last duel. */
+  const isOwnLocalPrediction = card.login.startsWith("local-");
 
   const options = useMemo(() => {
     if (!market) return ["Yes — the outcome happens", "No — the outcome fails"];
@@ -99,37 +126,93 @@ export default function BetPanel({ card: initialCard }: { card: Card }) {
     setCard(initialCard);
   }, [initialCard]);
 
+  const pushCard = useCallback(
+    (next: Card) => {
+      setCard(next);
+      onCardChange?.(next);
+    },
+    [onCardChange],
+  );
+
+  // Restore go-live countdown after refresh so BET stays locked until open
+  useEffect(() => {
+    const login = initialCard.login.toLowerCase();
+    const duelId = initialCard.market?.duelId?.toLowerCase() || "";
+    const row = listLocalMadeCards().find(
+      (r) =>
+        r.localLogin.toLowerCase() === login ||
+        (duelId && r.duelId?.toLowerCase() === duelId),
+    );
+    if (row?.opensAt && row.opensAt > Date.now() + 2_000) {
+      setOpensAt(row.opensAt);
+    }
+  }, [initialCard.login, initialCard.market?.duelId]);
+
   useEffect(() => {
     if (!opensAt) {
       setWaitLabel(null);
       return;
     }
+
+    let fired = false;
+    const fireLive = () => {
+      if (fired) return;
+      fired = true;
+      const q = market?.question || card.name;
+      const duelId = market?.duelId || card.login;
+      dispatchMarketLive({
+        id: `${duelId}:${opensAt}`,
+        title: "Market is live — bet now",
+        body: q.slice(0, 120),
+        href: `/${encodeURIComponent(card.login)}`,
+        question: q,
+      });
+      setLiveBanner(q);
+      setWaitLabel("Market is open — place your bet now.");
+      setStatus(`LIVE — betting is open on “${q.slice(0, 72)}${q.length > 72 ? "…" : ""}”.`);
+    };
+
+    const left = opensAt - Date.now();
+    if (left <= 0) {
+      fireLive();
+      return;
+    }
+
+    void ensureNotifyPermission();
+
     const tick = () => {
-      const left = opensAt - Date.now();
-      if (left <= 0) {
-        setWaitLabel(null);
+      const ms = opensAt - Date.now();
+      if (ms <= 0) {
+        fireLive();
         return;
       }
-      const m = Math.floor(left / 60_000);
-      const s = Math.ceil((left % 60_000) / 1000);
+      const m = Math.floor(ms / 60_000);
+      const s = Math.ceil((ms % 60_000) / 1000);
       setWaitLabel(
-        m > 0 ? `Opens in ${m}m ${s}s — bet will send automatically` : `Opens in ${s}s…`,
+        m > 0
+          ? `Opens in ${m}m ${s}s — you’ll get a notification when live`
+          : `Opens in ${s}s — notification firing at zero`,
       );
     };
     tick();
-    const id = setInterval(tick, 1000);
-    return () => clearInterval(id);
-  }, [opensAt]);
+    const interval = setInterval(tick, 1000);
+    // Exact timeout so the alert is immediate at open (not waiting for next 1s tick)
+    const timeout = setTimeout(fireLive, left + 50);
+    return () => {
+      clearInterval(interval);
+      clearTimeout(timeout);
+    };
+  }, [opensAt, market?.question, market?.duelId, card.login, card.name]);
 
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-  const waitUntilOpen = useCallback(async (until: number) => {
+  /** Brief client hold near open time only (clock skew), not the full ~5 min window. */
+  const waitUntilOpenShort = useCallback(async (until: number) => {
     setOpensAt(until);
     while (Date.now() < until) {
-      await sleep(Math.min(5_000, until - Date.now()));
+      await sleep(Math.min(2_000, Math.max(250, until - Date.now())));
     }
     setOpensAt(null);
-    // small buffer for Bento clock skew
     await sleep(2_500);
   }, []);
 
@@ -258,7 +341,7 @@ export default function BetPanel({ card: initialCard }: { card: Card }) {
     return () => clearTimeout(t);
   }, [canPlaceOnChain, isLoggedIn, refreshQuote]);
 
-  const publishLocal = useCallback(async (): Promise<{
+  const publishLocal = useCallback(async (opts?: { force?: boolean }): Promise<{
     card: Card;
     opensAt: number | null;
   } | null> => {
@@ -275,6 +358,7 @@ export default function BetPanel({ card: initialCard }: { card: Card }) {
           login: card.login,
           card,
           address: managedAddress || signingAddress || undefined,
+          force: Boolean(opts?.force),
         }),
       });
       const data = (await res.json()) as {
@@ -288,10 +372,13 @@ export default function BetPanel({ card: initialCard }: { card: Card }) {
       if (!res.ok || !data.card?.market) {
         throw new Error(data.error || "Could not open live prediction");
       }
-      setCard(data.card);
-      const delay = data.opensInMs ?? 6 * 60_000;
-      const openAt = data.already ? null : Date.now() + delay;
-      if (openAt) setOpensAt(openAt);
+      pushCard(data.card);
+      const delay = Math.max(0, data.opensInMs ?? (data.already ? 0 : 6 * 60_000 + 30_000));
+      const openAt = delay > 2_000 ? Date.now() + delay : data.already ? null : Date.now() + delay;
+      if (openAt && openAt > Date.now()) {
+        setOpensAt(openAt);
+        void ensureNotifyPermission();
+      }
       const localLogin = card.login.startsWith("local-")
         ? card.login
         : data.card.login.startsWith("local-")
@@ -308,9 +395,11 @@ export default function BetPanel({ card: initialCard }: { card: Card }) {
       });
       const mins = Math.max(1, Math.round(delay / 60_000));
       setStatus(
-        data.already
-          ? `Prediction already live (${data.duelId?.slice(0, 14) ?? "ok"}…).`
-          : `Private prediction ready (${data.duelId?.slice(0, 14) ?? "ok"}…). Opens in ~${mins} min — waiting, then betting on your pick.`,
+        data.already && delay <= 2_000
+          ? `Prediction already live (${data.duelId?.slice(0, 14) ?? "ok"}…). You can bet now.`
+          : data.already
+            ? `Prediction is warming up (${data.duelId?.slice(0, 14) ?? "ok"}…). Opens in ~${mins} min — then tap BET.`
+            : `Private prediction created (${data.duelId?.slice(0, 14) ?? "ok"}…). Opens in ~${mins} min — allow notifications to get pinged the second it goes live.`,
       );
       return { card: data.card, opensAt: openAt };
     } catch (e) {
@@ -319,7 +408,7 @@ export default function BetPanel({ card: initialCard }: { card: Card }) {
     } finally {
       setPublishing(false);
     }
-  }, [card, ensureToken, setError, managedAddress, signingAddress]);
+  }, [card, ensureToken, setError, managedAddress, signingAddress, pushCard]);
 
   if (!market) return null;
 
@@ -332,12 +421,31 @@ export default function BetPanel({ card: initialCard }: { card: Card }) {
       let liveMarket = live.market!;
       let openAt: number | null = opensAt;
 
-      if (isLocal) {
-        const published = await publishLocal();
+      // Own hyper-local: open / recreate prediction first (status=-1 → always force)
+      const dead = Number(liveMarket.status) < 0;
+      const needsPublish =
+        isLocal ||
+        (isOwnLocalPrediction &&
+          (dead ||
+            liveMarket.duelId.startsWith("local-") ||
+            liveMarket.source === "local"));
+
+      if (needsPublish) {
+        // force only when minting over a dead binding; warming -1 is remapped server-side
+        const published = await publishLocal({ force: false });
         if (!published?.card.market) throw new Error("Open the live prediction first.");
         live = published.card;
         liveMarket = published.card.market!;
         openAt = published.opensAt;
+        // Truly cancelled after reuse attempt → hard recreate once
+        if (Number(liveMarket.status) < 0 && !liveMarket.duelId.startsWith("local-")) {
+          const fresh = await publishLocal({ force: true });
+          if (!fresh?.card.market) throw new Error("Open the live prediction first.");
+          live = fresh.card;
+          liveMarket = { ...fresh.card.market, status: 1 };
+          openAt = fresh.opensAt;
+          pushCard({ ...live, market: liveMarket });
+        }
       }
 
       if (
@@ -351,6 +459,12 @@ export default function BetPanel({ card: initialCard }: { card: Card }) {
             ? "Props & Futures cards are scout-only. Pick a native Bento market to place with credits."
             : "This card can't accept bets yet.",
         );
+      }
+
+      // Private / pre-start catalogs often return status=-1 — soft-open and continue
+      if (Number(liveMarket.status) < 0) {
+        liveMarket = { ...liveMarket, status: 1 };
+        pushCard({ ...live, market: liveMarket });
       }
 
       const n = Math.floor(Number(amount));
@@ -369,10 +483,19 @@ export default function BetPanel({ card: initialCard }: { card: Card }) {
           : "NO";
       const picked = options[optionIndex] || optionLabel;
 
-      // If market isn't open yet, wait on the client (Bento requires future startTime)
-      if (openAt && openAt > Date.now() + 2_000) {
-        setStatus(`Waiting to bet on: ${picked}`);
-        await waitUntilOpen(openAt);
+      // ~5 min Bento floor: don't hold the tab for the whole wait — notify + tap BET when close/live
+      if (openAt && openAt > Date.now() + SHORT_WAIT_MS) {
+        setOpensAt(openAt);
+        void ensureNotifyPermission();
+        const mins = Math.max(1, Math.ceil((openAt - Date.now()) / 60_000));
+        setStatus(
+          `Your prediction is warming up (~${mins} min). You’ll get a notification — then tap BET on “${picked}”.`,
+        );
+        return;
+      }
+      if (openAt && openAt > Date.now()) {
+        setStatus(`Almost open — placing on “${picked}”…`);
+        await waitUntilOpenShort(openAt);
       }
 
       let jwtFresh = await ensureToken();
@@ -388,7 +511,7 @@ export default function BetPanel({ card: initialCard }: { card: Card }) {
 
       let { res, data } = await tryWith();
 
-      // Server said not started — wait then retry once (refresh JWT in case wait was long)
+      // Server said not started — short wait + one retry, else hand control back
       if (
         !res.ok &&
         (data.code === "MARKET_NOT_STARTED" || /not open yet|opens in/i.test(data.error || ""))
@@ -396,13 +519,80 @@ export default function BetPanel({ card: initialCard }: { card: Card }) {
         const until =
           data.opensAt ||
           (data.opensInMs != null ? Date.now() + data.opensInMs : Date.now() + 60_000);
-        setStatus(`Waiting to bet on: ${picked}`);
-        await waitUntilOpen(until);
+        if (until > Date.now() + SHORT_WAIT_MS) {
+          setOpensAt(until);
+          void ensureNotifyPermission();
+          const mins = Math.max(1, Math.ceil((until - Date.now()) / 60_000));
+          setStatus(
+            `Market not open yet (~${mins} min). You’ll get a notification — then tap BET.`,
+          );
+          return;
+        }
+        setStatus(`Almost open — placing on “${picked}”…`);
+        await waitUntilOpenShort(until);
         jwtFresh = await ensureToken();
         ({ res, data } = await tryWith());
       }
 
+      // Only recreate when Bento says the binding is truly dead — not while warming
+      const stillWarming = Boolean(openAt && openAt > Date.now());
+      if (
+        !res.ok &&
+        isOwnLocalPrediction &&
+        !stillWarming &&
+        (data.code === "MARKET_DEAD" ||
+          /status\s*=?\s*-1|paused|invalid|cancelled|canceled/i.test(data.error || ""))
+      ) {
+        setStatus("Prior market unusable — opening a fresh prediction…");
+        const published = await publishLocal({ force: true });
+        if (!published?.card.market) throw new Error(data.error || "Bet failed");
+        live = published.card;
+        liveMarket = published.card.market!;
+        openAt = published.opensAt;
+        if (openAt && openAt > Date.now() + SHORT_WAIT_MS) {
+          setOpensAt(openAt);
+          void ensureNotifyPermission();
+          const mins = Math.max(1, Math.ceil((openAt - Date.now()) / 60_000));
+          setStatus(
+            `Fresh prediction ready. Opens in ~${mins} min — you’ll be notified, then tap BET on “${picked}”.`,
+          );
+          return;
+        }
+        if (openAt && openAt > Date.now()) await waitUntilOpenShort(openAt);
+        jwtFresh = await ensureToken();
+        ({ res, data } = await placeBetRequest({
+          jwt: jwtFresh,
+          duelId: liveMarket.duelId,
+          duelType: liveMarket.duelType,
+          optionLabel,
+          units: n,
+          collateralMode: liveMarket.collateralMode,
+        }));
+      }
+
+      // Warming + status noise: surface countdown instead of a hard fail
+      if (
+        !res.ok &&
+        stillWarming &&
+        (data.code === "MARKET_DEAD" ||
+          data.code === "MARKET_NOT_STARTED" ||
+          /status\s*=?\s*-1|not open yet/i.test(data.error || ""))
+      ) {
+        setOpensAt(openAt);
+        void ensureNotifyPermission();
+        const mins = Math.max(1, Math.ceil((openAt! - Date.now()) / 60_000));
+        setStatus(
+          `Still warming (~${mins} min). You’ll get a notification — then tap BET on “${picked}”.`,
+        );
+        return;
+      }
+
       if (!res.ok) throw new Error(data.error || "Bet failed");
+      setOpensAt(null);
+      setLiveBanner(null);
+      // Optimistic metrics bump so SCOUTING METRICS / ATTRIBUTES move with the stake
+      const withStake = applyStakeToCard(live, Number(data.units ?? n));
+      pushCard(withStake);
       setStatus(
         `Bet saved on “${picked}” (${data.bet ?? optionLabel} · ${data.units ?? n} credits). Check MY BETS.`,
       );
@@ -416,16 +606,15 @@ export default function BetPanel({ card: initialCard }: { card: Card }) {
       setStatus(e instanceof Error ? e.message : "Bet failed");
     } finally {
       setPlacing(false);
-      setOpensAt(null);
     }
   };
 
   const showTradeUi =
     isLoggedIn &&
-    (canPlaceOnChain || isLocal) &&
+    (canPlaceOnChain || isLocal || isOwnLocalPrediction) &&
     !isPolymarket &&
     !isDemo &&
-    !marketBlocked;
+    (!marketBlocked || isDeadLivePrediction || isOwnLocalPrediction);
 
   return (
     <div className="mt-3 w-full rounded-xl border border-line bg-white/[0.03] p-4">
@@ -436,7 +625,13 @@ export default function BetPanel({ card: initialCard }: { card: Card }) {
         {market.question || card.name}
       </p>
       <div className="mt-2 flex flex-wrap gap-1.5 text-[11px] text-ink-faint">
-        <span>{market.category}</span>
+        <span>
+          {preferMarketDisplayCategory(
+            market.category,
+            card.login.startsWith("local-") ? "Hyper-Local" : null,
+            `${market.description || ""}\n${market.question || ""}\n${card.name}`,
+          )}
+        </span>
         <span>·</span>
         <span className="font-mono">{market.duelId.slice(0, 12)}…</span>
         <span>·</span>
@@ -469,7 +664,33 @@ export default function BetPanel({ card: initialCard }: { card: Card }) {
         <WalletSession wallet={wallet} compact={isLoggedIn} />
       </div>
 
-      {waitLabel && (
+      {liveBanner && (
+        <div
+          role="status"
+          className="mt-3 rounded-xl border border-brand/50 bg-brand/15 px-3 py-3 shadow-[0_0_24px_rgba(57,211,83,.12)]"
+        >
+          <div className="flex items-start justify-between gap-2">
+            <div>
+              <p className="font-display text-[12px] font-bold tracking-[.16em] text-brand-hi">
+                ● LIVE — BETTING OPEN
+              </p>
+              <p className="mt-1 text-[12.5px] leading-snug text-ink">
+                {liveBanner.slice(0, 140)}
+                {liveBanner.length > 140 ? "…" : ""}
+              </p>
+              <p className="mt-1 text-[11.5px] text-ink-soft">Place your stake now.</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setLiveBanner(null)}
+              className="shrink-0 text-[11px] text-ink-faint hover:text-ink"
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
+      {waitLabel && !liveBanner && (
         <p className="mt-2 text-[12px] leading-snug text-brand-hi">{waitLabel}</p>
       )}
       {creditsHint && (
@@ -477,16 +698,36 @@ export default function BetPanel({ card: initialCard }: { card: Card }) {
       )}
       {marketWarning && (
         <div className="mt-2 rounded-lg border border-gold-hi/30 bg-gold-hi/10 px-3 py-2.5">
-          <p className="text-[12px] leading-snug text-gold-hi">{marketWarning}</p>
-          {marketBlocked && (
-            <Link
-              href="/"
-              className="font-display mt-2 inline-flex h-9 items-center rounded-md bg-brand px-3 text-[12px] tracking-wide text-[#04130a] hover:bg-brand-hi"
+          <p className="text-[12px] leading-snug text-gold-hi">
+            {isDeadLivePrediction
+              ? "Bento cancelled the last on-chain market (status=-1). Pick your side, stake, and tap RECREATE & BET — you’ll own the new prediction and can stake when it goes live."
+              : marketWarning}
+          </p>
+          {isDeadLivePrediction ? (
+            <button
+              type="button"
+              disabled={publishing || busy || placing}
+              onClick={() => void publishLocal({ force: true })}
+              className="font-display mt-2 inline-flex h-9 items-center rounded-md bg-brand px-3 text-[12px] tracking-wide text-[#04130a] hover:bg-brand-hi disabled:opacity-60"
             >
-              BROWSE LIVE MARKETS
-            </Link>
+              {publishing ? "OPENING FRESH…" : "OPEN FRESH PREDICTION"}
+            </button>
+          ) : (
+            marketBlocked && !isOwnLocalPrediction && (
+              <Link
+                href="/"
+                className="font-display mt-2 inline-flex h-9 items-center rounded-md bg-brand px-3 text-[12px] tracking-wide text-[#04130a] hover:bg-brand-hi"
+              >
+                BROWSE LIVE MARKETS
+              </Link>
+            )
           )}
         </div>
+      )}
+      {isOwnLocalPrediction && !isDeadLivePrediction && canPlaceOnChain && (
+        <p className="mt-2 text-[11.5px] text-ink-soft">
+          This is your prediction — you can stake credits on either side once the market is open.
+        </p>
       )}
 
       {isDemo && (
@@ -497,8 +738,8 @@ export default function BetPanel({ card: initialCard }: { card: Card }) {
 
       {isLocal && isLoggedIn && (
         <p className="mt-2 text-[11.5px] text-ink-soft">
-          Creates a private Bento prediction (skips public bootstrap), then bets when it opens —
-          usually ~6 min (on-chain floor). Keep this tab open; CREATE &amp; BET waits automatically.
+          Creates a private Bento prediction (~5 min on-chain floor before bets open — Bento
+          won’t accept an earlier startTime). When the countdown ends, tap BET.
           {market.externalUrl && (
             <>
               {" "}
@@ -512,6 +753,12 @@ export default function BetPanel({ card: initialCard }: { card: Card }) {
               </a>
             </>
           )}
+        </p>
+      )}
+      {canPlaceOnChain && marketWarming && (
+        <p className="mt-2 text-[11.5px] text-ink-soft">
+          Prediction is warming up (~5 min Bento floor). Tap BET near the end of the countdown —
+          we’ll wait up to ~2 min if it’s almost open.
         </p>
       )}
 
@@ -603,12 +850,25 @@ export default function BetPanel({ card: initialCard }: { card: Card }) {
                 publishing ||
                 busy ||
                 !amount.trim() ||
-                Boolean(marketWarning && /ended|closed|paused|invalid|expire/i.test(marketWarning))
+                Boolean(
+                  !isDeadLivePrediction &&
+                    !isOwnLocalPrediction &&
+                    marketWarning &&
+                    /ended|closed|paused|invalid|expire/i.test(marketWarning),
+                )
               }
               onClick={() => void place()}
               className="font-display h-10 shrink-0 rounded-lg bg-brand px-4 text-[13px] tracking-wide text-[#04130a] hover:bg-brand-hi disabled:opacity-60"
             >
-              {placing ? (waitLabel ? "WAITING TO OPEN…" : "BETTING…") : isLocal ? "CREATE & BET" : "BET"}
+              {placing
+                ? "BETTING…"
+                : isDeadLivePrediction
+                  ? "RECREATE & BET"
+                  : isLocal || isOwnLocalPrediction
+                    ? canPlaceOnChain
+                      ? "BET"
+                      : "CREATE & BET"
+                    : "BET"}
             </button>
           </div>
 
@@ -616,7 +876,7 @@ export default function BetPanel({ card: initialCard }: { card: Card }) {
             <div>
               <div className="font-display tracking-[.14em] text-ink-faint">STAKE</div>
               <div className="mt-0.5 font-mono text-ink">
-                {stakeUnits >= MIN_BET ? stakeUnits : "—"} cr
+                {stakeUnits >= MIN_BET ? stakeUnits : "—"}
               </div>
             </div>
             <div>

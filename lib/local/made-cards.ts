@@ -115,6 +115,12 @@ export function formatCountdown(opensAt: number, now = Date.now()): string {
 }
 
 export function cardHref(row: LocalMadeCard): string {
-  const id = row.duelId && !row.duelId.startsWith("local-") ? row.duelId : row.localLogin;
+  // Always open the hyper-local slug. After Create & bet we store a private
+  // Bento duelId — public /{duelId} lookup returns "No market found" without
+  // the creator address. The local-* card already has market.duelId for betting.
+  if (row.localLogin.toLowerCase().startsWith("local-")) {
+    return `/${encodeURIComponent(row.localLogin)}`;
+  }
+  const id = row.duelId || row.localLogin;
   return `/${encodeURIComponent(id)}`;
 }

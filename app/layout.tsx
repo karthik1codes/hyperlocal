@@ -3,6 +3,7 @@ import { Bebas_Neue, Inter, JetBrains_Mono } from "next/font/google";
 import localFont from "next/font/local";
 import "./globals.css";
 import { Analytics } from "@vercel/analytics/next";
+import LiveMarketWatcher from "@/components/LiveMarketWatcher";
 
 // Display — ultra-condensed all-caps for betting-card impact.
 const display = Bebas_Neue({
@@ -73,6 +74,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     >
       <body>
         {children}
+        <LiveMarketWatcher />
         <Analytics />
       </body>
     </html>

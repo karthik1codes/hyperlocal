@@ -23,39 +23,41 @@ export function deriveSkillMoves(s: Signals): { value: number; reason: string } 
   return { value, reason };
 }
 
-// Weak foot (1–5) = off-foot ability: how strong your WEAKER areas are (average
-// of the three lowest stats), so a one-trick profile rates low.
+// Weak foot (1–5) = off-side balance: how strong the WEAKER book stats are
+// (average of the three lowest), so a one-trick market rates low.
 export function deriveWeakFoot(stats: Stats): { value: number; reason: string } {
   const sorted = STATS.map((k) => stats[k]).sort((a, b) => a - b);
   const weakSide = Math.round((sorted[0] + sorted[1] + sorted[2]) / 3);
   const value = weakSide >= 72 ? 5 : weakSide >= 63 ? 4 : weakSide >= 54 ? 3 : weakSide >= 45 ? 2 : 1;
-  return { value, reason: `Off-foot: your three weakest stats average ${weakSide}/99.` };
+  return { value, reason: `Balance: three weakest book stats average ${weakSide}/99.` };
 }
 
 const rate = (v: number): WorkRateLevel => (v >= 68 ? "High" : v >= 50 ? "Med" : "Low");
 
-// Work rate: attack = shipping output (PAC/SHO), defense = maintenance (DEF).
+// Work rate: attack = volume & heat (PAC/SHO), defense = depth (DEF).
 export function deriveWorkRate(stats: Stats): { attack: WorkRateLevel; defense: WorkRateLevel; reason: string } {
   const attack = rate(Math.round((stats.pac + stats.sho) / 2));
   const defense = rate(stats.def);
   return {
     attack,
     defense,
-    reason: `Attack ${attack} from volume & heat; defense ${defense} from depth & balance.`,
+    reason: `Attack ${attack} from recent volume & heat; defense ${defense} from depth & balance.`,
   };
 }
 
-// Style: a one-word read of the recent activity pattern.
+// Style: a one-word read of recent trading / book activity.
 export function deriveStyle(s: Signals): { value: string; reason: string } {
-  if (s.recent_spike) return { value: "Explosive", reason: "A recent burst well above your usual pace." };
+  if (s.recent_spike) return { value: "Explosive", reason: "A sudden burst of stakes well above the usual pace." };
   if (s.active_days_recent >= 200 && s.recent_contributions >= 800)
-    return { value: "Relentless", reason: "Active on most days, all year round." };
+    return { value: "Relentless", reason: "Heavy book activity across most of the window." };
   if (s.account_age_years >= 6 && s.active_years >= 5)
-    return { value: "Controlled", reason: "A long, steady track record." };
+    return { value: "Controlled", reason: "A long, steady market track record." };
   if (s.max_repo_stars >= 5000 && s.recent_contributions < 200)
-    return { value: "Clinical", reason: "One big hit, quiet lately." };
-  if (s.recent_contributions >= 300) return { value: "Industrious", reason: "Steadily active this year." };
-  return { value: "Measured", reason: "Light recent activity." };
+    return { value: "Clinical", reason: "One big pool, quiet lately." };
+  if (s.recent_contributions >= 300) return { value: "Industrious", reason: "Steady staking through this window." };
+  if (s.recent_commits <= 0 && s.prs_to_others <= 0)
+    return { value: "Fresh", reason: "New card — metrics will climb as traders place bets." };
+  return { value: "Measured", reason: "Light book activity so far." };
 }
 
 interface MetricDef {
@@ -93,11 +95,19 @@ const CORE_METRICS: MetricDef[] = [
   { label: METRIC_LABELS.contributions, unit: "volume", ref: 50_000, value: (s) => s.total_contributions_lifetime },
 ];
 
-// Optional metrics — appended only to make up for zeroed core ones (see below).
+// Optional metrics — real clocks when core volume bars are still empty.
 const OPTIONAL_METRICS: MetricDef[] = [
-  { label: "Market age", unit: "yrs", ref: 15, value: (s) => Math.round(s.account_age_years) },
+  {
+    label: "Days live",
+    unit: "days",
+    ref: 90,
+    value: (s) => {
+      if (!(s.account_age_years > 0)) return 0;
+      return Math.max(1, Math.round(s.account_age_years * 365.25));
+    },
+  },
   { label: "Active window", unit: "days", ref: 365, value: (s) => s.active_days_recent },
-  { label: "Related signals", unit: "signals", ref: 200, value: (s) => s.public_repos },
+  { label: "Related signals", unit: "sources", ref: 12, value: (s) => s.public_repos },
   { label: "Active seasons", unit: "yrs", ref: 15, value: (s) => s.active_years },
 ];
 

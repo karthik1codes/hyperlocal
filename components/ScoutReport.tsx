@@ -306,12 +306,12 @@ export function AttributesPanel({ card }: { card: Card }) {
   return (
     <div className="flex w-full flex-col gap-[14px]">
       <Section title="ATTRIBUTES" accent={accent}>
-        <AttributeRow label="Skill moves">
+        <AttributeRow label="Market range">
           <Tip text={report.reasons.skillMoves} align="right">
             <StarRating value={report.skillMoves} accent={accent} />
           </Tip>
         </AttributeRow>
-        <AttributeRow label="Weak foot">
+        <AttributeRow label="Balance">
           <Tip text={report.reasons.weakFoot} align="right">
             <StarRating value={report.weakFoot} accent={accent} />
           </Tip>
@@ -344,7 +344,12 @@ export function MetricsPanel({ card }: { card: Card }) {
     <Section title="SCOUTING METRICS" accent={accent} className="w-full">
       <div className="flex flex-col gap-[13px] pt-1">
         {card.report.metrics.map((m, i) => (
-          <MetricBar key={m.label} metric={m} accent={accent} index={i} />
+          <MetricBar
+            key={`${m.label}-${m.value}-${m.score}`}
+            metric={m}
+            accent={accent}
+            index={i}
+          />
         ))}
       </div>
     </Section>

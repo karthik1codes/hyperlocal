@@ -87,6 +87,10 @@ export interface BentoMarketMeta {
   externalUrl?: string | null;
   /** Moneyline legs (home / draw / away) each with their own condition address. */
   outcomeAddresses?: { label: string; conditionId: string }[];
+  /** Client clock: when this scout card was minted (epoch ms). */
+  scoutMintedAt?: number;
+  /** Client clock: absolute resolve deadline (epoch ms). */
+  scoutDeadlineAt?: number;
 }
 
 export interface Card {

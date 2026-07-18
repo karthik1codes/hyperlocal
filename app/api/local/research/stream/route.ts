@@ -79,7 +79,13 @@ export async function POST(req: Request) {
           sourceUrl: bundle.hit.url,
           sourceHost: bundle.hit.sourceHost,
           summary: bundle.draft?.summary || bundle.hit.summary,
-          imageUrl: bundle.card.cardImageUrl || bundle.hit.imageUrl,
+          imageUrl:
+            (bundle.hit.imageUrl && bundle.hit.imageUrl.startsWith("http")
+              ? bundle.hit.imageUrl
+              : null) ||
+            (bundle.card.avatarUrl?.startsWith("http") ? bundle.card.avatarUrl : null) ||
+            bundle.card.cardImageUrl ||
+            null,
           whyItMatters: bundle.draft?.whyItMatters || null,
           category: bundle.draft?.category || bundle.card.market?.category || null,
           card: bundle.card,

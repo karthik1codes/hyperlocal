@@ -167,8 +167,27 @@ describe("deriveStyle", () => {
   });
 
   it("falls back to Measured for a quiet profile", () => {
-    const s = signals({ recent_contributions: 299, account_age_years: 2, active_years: 1, max_repo_stars: 0 });
+    const s = signals({
+      recent_contributions: 299,
+      account_age_years: 2,
+      active_years: 1,
+      max_repo_stars: 0,
+      recent_commits: 10,
+      prs_to_others: 1,
+    });
     expect(deriveStyle(s).value).toBe("Measured");
+  });
+
+  it("returns Fresh for a brand-new empty book", () => {
+    const s = signals({
+      recent_contributions: 0,
+      recent_commits: 0,
+      prs_to_others: 0,
+      max_repo_stars: 0,
+      account_age_years: 0.02,
+      active_years: 1,
+    });
+    expect(deriveStyle(s).value).toBe("Fresh");
   });
 
   it("always ships a reason with the value", () => {
@@ -210,7 +229,7 @@ describe("deriveMetrics", () => {
 
     const threeZeros = deriveMetrics(signals({ ...full, reviews: 0, issues_closed: 0, prs_to_others: 0 }));
     expect(threeZeros).toHaveLength(8); // 6 core + 2 fillers
-    expect(threeZeros.map((x) => x.label)).toContain("Market age");
+    expect(threeZeros.map((x) => x.label)).toContain("Days live");
     expect(threeZeros.map((x) => x.label)).toContain("Active window");
   });
 

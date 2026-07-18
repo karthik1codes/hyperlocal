@@ -233,9 +233,9 @@ export default function BetsSidebar({
             </div>
             {made.length === 0 ? (
               <p className="rounded-lg border border-line bg-white/[0.03] px-3 py-3 text-[12.5px] leading-snug text-ink-soft">
-                Mint a hyper-local card from home. After{" "}
-                <span className="text-ink">Create &amp; bet</span>, a countdown
-                shows here until the market goes live (~6 min).
+                Mint a hyper-local card from home. After you create a live
+                prediction, a ~6 min countdown shows here — open the card and
+                click BET as soon as it goes live.
               </p>
             ) : (
               <ul className="flex flex-col gap-2">

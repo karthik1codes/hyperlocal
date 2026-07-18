@@ -318,17 +318,29 @@ export default function LocalLabForm({
       setProgress([]);
       try {
         const next = await runResearchStream(r, t, appendProgress, ac.signal);
-        setPreview(next);
-        setCards((prev) => [next, ...prev].slice(0, 8));
-        onCardMinted?.(next.card);
-        // Keep the card in the browser so /local-* works even when Vercel
-        // memory/Redis miss on the next request.
-        writeCardCache(next.card);
+        // Durable photo for OPEN CARD / share URL — prefer http, then preview imageUrl
+        const photo =
+          (next.imageUrl && next.imageUrl.startsWith("http") && next.imageUrl) ||
+          (next.card.avatarUrl?.startsWith("http") && next.card.avatarUrl) ||
+          next.card.avatarUrl ||
+          next.imageUrl ||
+          "";
+        const cardWithPhoto = {
+          ...next.card,
+          avatarUrl: photo || next.card.avatarUrl,
+          cardImageUrl: photo ? null : next.card.cardImageUrl,
+        };
+        const previewNext = { ...next, card: cardWithPhoto, imageUrl: photo || next.imageUrl };
+        setPreview(previewNext);
+        setCards((prev) => [previewNext, ...prev].slice(0, 8));
+        onCardMinted?.(cardWithPhoto);
+        // Keep the card in the browser so /local-* opens the same art
+        writeCardCache(cardWithPhoto);
         upsertLocalMadeCard({
-          localLogin: next.card.login,
-          question: next.question || next.card.market?.question || next.card.name,
+          localLogin: cardWithPhoto.login,
+          question: next.question || cardWithPhoto.market?.question || cardWithPhoto.name,
           region: r,
-          overall: next.card.overall,
+          overall: cardWithPhoto.overall,
           createdAt: Date.now(),
           opensAt: null,
           duelId: null,
@@ -337,10 +349,17 @@ export default function LocalLabForm({
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            card: next.card,
+            card: cardWithPhoto,
             region: r,
             topic: t,
             question: next.question,
+            hit: {
+              title: next.question || cardWithPhoto.name,
+              url: next.sourceUrl || cardWithPhoto.market?.externalUrl || "",
+              sourceHost: "local",
+              summary: next.summary || "",
+              imageUrl: photo.startsWith("http") ? photo : null,
+            },
           }),
         }).catch(() => {
           /* best-effort */
@@ -349,7 +368,7 @@ export default function LocalLabForm({
         if (next.sharePath && !auto) {
           router.push(next.sharePath);
         }
-        return next;
+        return previewNext;
       } catch (e) {
         if ((e as Error).name === "AbortError") return null;
         setError(e instanceof Error ? e.message : "Research failed");

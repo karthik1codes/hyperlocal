@@ -1,8 +1,9 @@
 import { buildCard } from "@/lib/scoring/engine";
-import type { Card, Signals, BentoMarketMeta } from "@/lib/scoring/types";
+import type { Card, BentoMarketMeta } from "@/lib/scoring/types";
 import { countryFromLocation } from "@/lib/geo";
 import type { LocalNewsHit } from "./types";
 import type { GeminiCardDraft } from "./openai";
+import { signalsFromLocalRealtime } from "./realtime-signals";
 
 const AVATAR_FALLBACK =
   "data:image/svg+xml;utf8," +
@@ -46,46 +47,6 @@ export function makeLocalLogin(region: string, topic: string): string {
   return `local-${slugify(region, 16)}-${slugify(topic, 20)}-${stamp}`;
 }
 
-function signalsFromLocal(input: {
-  login: string;
-  region: string;
-  topic: string;
-  hit: LocalNewsHit;
-  question: string;
-  draft?: GeminiCardDraft | null;
-}): Signals {
-  const heat = (input.draft?.heat ?? 55) / 100;
-  const freshness = 0.55 + heat * 0.45;
-  const name = clampName(input.draft?.cardName || input.region);
-  const category = input.draft?.category || "Local";
-
-  return {
-    login: input.login,
-    name,
-    avatarUrl:
-      (input.hit.imageUrl && input.hit.imageUrl.startsWith("http") && input.hit.imageUrl) ||
-      "",
-    location: input.region,
-    followers: Math.round(400 + freshness * 1800),
-    account_age_years: 0.05,
-    public_repos: 3 + Math.round(heat * 4),
-    total_stars_owned: Math.round(800 + freshness * 3200),
-    max_repo_stars: Math.round(180 + heat * 220),
-    languages: 3,
-    rankedLanguages: [category, input.region.split(",")[0]?.trim() || "City", "News"],
-    topLanguage: category,
-    recent_contributions: Math.round(2200 * freshness),
-    active_days_recent: Math.min(365, Math.round((input.draft?.deadlineDays || 90) / 2)),
-    active_years: 1,
-    total_contributions_lifetime: Math.round(900 + heat * 800),
-    prs_to_others: Math.round(24 + heat * 40),
-    reviews: Math.round(40 + heat * 50),
-    issues_closed: Math.round(18 + heat * 20),
-    recent_commits: Math.round(1800 * freshness),
-    recent_spike: heat >= 0.65,
-  };
-}
-
 function marketMetaFromLocal(input: {
   login: string;
   region: string;
@@ -113,7 +74,7 @@ function marketMetaFromLocal(input: {
     options: [optionYes, optionNo],
     collateralMode: "credits",
     totalBetAmountUsdc: 0,
-    uniqueParticipants: 1,
+    uniqueParticipants: 0,
     status: 1,
     category: input.draft?.category || "Hyper-Local",
     description: `${summary}${why}\n\nSource: ${input.hit.url}\nTopic: ${input.topic}`,
@@ -125,6 +86,8 @@ function marketMetaFromLocal(input: {
     slug: input.login,
     externalUrl: input.hit.url,
     outcomeAddresses: [],
+    scoutMintedAt: Date.now(),
+    scoutDeadlineAt: Date.now() + days * 86_400_000,
   };
 }
 
@@ -154,13 +117,16 @@ export function cardFromLocalResearch(input: {
 }): LocalPredictionBundle {
   const login = makeLocalLogin(input.region, input.topic);
   const question = (input.draft?.question || predictionFromNews(input)).slice(0, 200);
-  const signals = signalsFromLocal({
+  const createdAtMs = Date.now();
+  const days = input.draft?.deadlineDays || 90;
+  const signals = signalsFromLocalRealtime({
     login,
     region: input.region,
-    topic: input.topic,
     hit: input.hit,
-    question,
     draft: input.draft,
+    createdAtMs,
+    deadlineAtMs: createdAtMs + days * 86_400_000,
+    endsInSeconds: days * 86_400,
   });
   const card = buildCard(signals);
   const country = countryFromLocation(input.region) || card.country;
@@ -169,7 +135,7 @@ export function cardFromLocalResearch(input: {
     ...card,
     country,
     name: displayName,
-    avatarUrl: signals.avatarUrl,
+    avatarUrl: signals.avatarUrl || AVATAR_FALLBACK,
     cardImageUrl: input.cardImageUrl || null,
     market: marketMetaFromLocal({
       login,
@@ -181,7 +147,6 @@ export function cardFromLocalResearch(input: {
     }),
   };
 
-  // Attach Gemini blurb into archetype when present
   if (input.draft?.whyItMatters) {
     withMarket.archetypeBlurb = input.draft.whyItMatters;
   }

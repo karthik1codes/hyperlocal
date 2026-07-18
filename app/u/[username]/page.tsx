@@ -57,7 +57,7 @@ function NotScouted({ username, error }: { username: string; error: ScoutError }
       </h1>
       <p className="mt-3 text-[15.5px] leading-[1.5] text-ink-soft">{message}</p>
       <Link
-        href={isLocal ? "/local" : "/"}
+        href={isLocal ? "/" : "/"}
         className="font-display mt-7 inline-flex h-[46px] items-center rounded-xl bg-brand px-6 text-[16px] tracking-[.06em] text-[#04130a] transition hover:bg-brand-hi"
       >
         {rateLimited
@@ -89,9 +89,11 @@ export default async function Page({
     card = { ...card, country: displayCountry };
   }
 
+  const isLocal =
+    username.trim().replace(/^@/, "").toLowerCase().startsWith("local-");
   const isLocalMiss =
     !card &&
-    username.trim().replace(/^@/, "").toLowerCase().startsWith("local-") &&
+    isLocal &&
     (res as { error?: ScoutError }).error?.type === "notfound";
 
   return (

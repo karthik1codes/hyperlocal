@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowLeft } from "lucide-react";
 import type { Card } from "@/lib/scoring/types";
 import PlayerCard from "./PlayerCard";
@@ -14,12 +14,19 @@ import Mascot from "./Mascot";
 import dynamic from "next/dynamic";
 import { AttributesPanel, MetricsPanel, ReportHeader } from "./ScoutReport";
 import DistributionPanel from "./DistributionPanel";
+import StatsLegend from "./StatsLegend";
 import BetPanel from "./BetPanel";
 import WalletChip from "./WalletChip";
-import BetsSidebar from "./BetsSidebar";
+import BetsSidebar, { BETS_CHANGED_EVENT } from "./BetsSidebar";
 import { confettiPalette, resolveCardTheme, resolveResultTheme } from "./finishTheme";
 import { useReveal } from "@/hooks/useReveal";
 import { burstConfetti } from "@/lib/confetti";
+import {
+  isLiveRefreshableDuelId,
+  mergeLiveScoutCard,
+} from "@/lib/bento/merge-live-card";
+import { useBentoWallet } from "@/hooks/useBentoWallet";
+import { recomputeCardRealtime } from "@/lib/local/realtime-signals";
 
 const HowItWorksModal = dynamic(() => import("./HowItWorksModal"), { ssr: false });
 
@@ -37,17 +44,77 @@ interface Props {
 const CARD_WIDTH = "clamp(220px, min(80vw, 40vh), 332px)";
 
 export default function ResultView({
-  card,
+  card: initialCard,
   onBack,
   onCountryChange,
   canonicalCountry = "",
 }: Props) {
   const captureRef = useRef<HTMLDivElement>(null);
   const storyRef = useRef<HTMLDivElement>(null);
+  const [card, setCard] = useState(initialCard);
+  const wallet = useBentoWallet();
   const theme = resolveResultTheme(card);
   const phase = useReveal(card.finish);
   const [modalOpen, setModalOpen] = useState(false);
   const [betsOpen, setBetsOpen] = useState(false);
+
+  useEffect(() => {
+    setCard(initialCard);
+  }, [initialCard]);
+
+  const refreshLiveMetrics = useCallback(async () => {
+    const duelId = card.market?.duelId;
+    if (!isLiveRefreshableDuelId(duelId)) return;
+    try {
+      const addr = wallet.managedAddress || wallet.signingAddress;
+      const qs = new URLSearchParams({ duelId: duelId! });
+      if (addr) qs.set("address", addr);
+      const res = await fetch(`/api/bento/live-metrics?${qs}`);
+      const data = (await res.json()) as { card?: Card; error?: string };
+      if (!res.ok || !data.card?.report) return;
+      setCard((prev) => mergeLiveScoutCard(prev, data.card!));
+    } catch {
+      /* best-effort */
+    }
+  }, [card.market?.duelId, wallet.managedAddress, wallet.signingAddress]);
+
+  // Refresh attributes + scouting metrics from the live book after each bet
+  useEffect(() => {
+    if (!isLiveRefreshableDuelId(card.market?.duelId)) return;
+    void refreshLiveMetrics();
+    const onBets = () => {
+      window.setTimeout(() => void refreshLiveMetrics(), 1_200);
+      window.setTimeout(() => void refreshLiveMetrics(), 4_000);
+    };
+    window.addEventListener(BETS_CHANGED_EVENT, onBets);
+    const poll = window.setInterval(() => void refreshLiveMetrics(), 25_000);
+    return () => {
+      window.removeEventListener(BETS_CHANGED_EVENT, onBets);
+      window.clearInterval(poll);
+    };
+  }, [card.market?.duelId, refreshLiveMetrics]);
+
+  // Tick clocks for hyper-local cards (days left / days live) while viewing.
+  // Skip when a live Bento duel is polled above — that path owns volume + endsIn.
+  useEffect(() => {
+    if (isLiveRefreshableDuelId(card.market?.duelId)) return;
+    const minted = card.market?.scoutMintedAt;
+    if (!card.login.startsWith("local-") && !minted) return;
+    const tick = () => {
+      setCard((prev) => {
+        if (isLiveRefreshableDuelId(prev.market?.duelId)) return prev;
+        const createdAtMs = prev.market?.scoutMintedAt || minted || Date.now();
+        return recomputeCardRealtime(prev, {
+          createdAtMs,
+          deadlineAtMs: prev.market?.scoutDeadlineAt,
+          draftCategory: prev.market?.category || null,
+        });
+      });
+    };
+    tick();
+    const id = window.setInterval(tick, 30_000);
+    return () => window.clearInterval(id);
+  }, [card.login, card.market?.scoutMintedAt, card.market?.duelId]);
 
   // BACK when the visitor came from home this tab; otherwise (direct / shared
   // link) a CTA to make their own card. Default to the CTA so share-link
@@ -198,7 +265,7 @@ export default function ResultView({
             <DuelButton login={card.login} />
           </div>
           <div className="w-[min(100%,440px)]">
-            <BetPanel card={card} />
+            <BetPanel card={card} onCardChange={setCard} />
           </div>
         </div>
 
@@ -210,6 +277,8 @@ export default function ResultView({
           </div>
         </div>
       </div>
+
+      <StatsLegend card={card} />
 
       {/* Off-screen story canvas (1080×1920). Parked in a 0×0 clip holder at the
           viewport origin — NOT display:none — so its card art/avatar/fonts paint

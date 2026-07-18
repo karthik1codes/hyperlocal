@@ -31,6 +31,20 @@ export async function POST(req: Request) {
     }
 
     const existing = await loadLocalPrediction(login);
+    const photoHttp =
+      (typeof body.hit?.imageUrl === "string" && body.hit.imageUrl.startsWith("http")
+        ? body.hit.imageUrl
+        : null) ||
+      (card.avatarUrl?.startsWith("http") ? card.avatarUrl : null) ||
+      (existing?.hit?.imageUrl?.startsWith("http") ? existing.hit.imageUrl : null);
+
+    const cardForSave: Card = {
+      ...card,
+      login,
+      avatarUrl: photoHttp || card.avatarUrl || "",
+      cardImageUrl: photoHttp ? null : card.cardImageUrl,
+    };
+
     const row: StoredLocalPrediction = {
       login,
       region: body.region || existing?.region || card.country || "Local",
@@ -44,11 +58,17 @@ export async function POST(req: Request) {
           url: card.market.externalUrl || "",
           sourceHost: "local",
           summary: card.market.description || card.name,
-          imageUrl: card.avatarUrl?.startsWith("http") ? card.avatarUrl : null,
+          imageUrl: photoHttp,
         } satisfies StoredLocalPrediction["hit"]),
-      card: { ...card, login },
+      card: cardForSave,
       createdAt: existing?.createdAt || Date.now(),
     };
+
+    // Always stamp durable http photo onto hit
+    if (photoHttp) {
+      row.hit = { ...row.hit, imageUrl: photoHttp };
+      row.card = { ...row.card, avatarUrl: photoHttp, cardImageUrl: null };
+    }
 
     const saved = await saveLocalPrediction(row);
     return NextResponse.json({ ok: true, login, redis: saved.redis });

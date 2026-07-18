@@ -5,14 +5,24 @@ import { resolveResultTheme } from "./finishTheme";
 import { Tip } from "./ScoutReport";
 import type { Card } from "@/lib/scoring/types";
 
-// Small "where you stand" histogram under the scouting metrics: overall rating
-// of a uniform random sample of scored profiles (scored by this same engine),
-// with this card's overall marked. Sqrt-scaled bar heights so the long bronze
-// tail doesn't flatten everything right of 60 (the interesting part).
+// Small "where this market stands" histogram under the scouting metrics:
+// overall rating vs a sample of scored markets (same engine), with this card's
+// overall marked. Sqrt-scaled bar heights so the long bronze tail doesn't flatten
+// everything right of 60 (the interesting part).
 const W = 328;
 const H = 64;
 const PAD_TOP = 14;
 const X_MAX = 100;
+
+/** Compact marker label — full local-* slugs overflow the chart. */
+function markerLabel(card: Card): string {
+  const name = (card.name || "").trim();
+  if (name && name.length <= 22 && !/^local-/i.test(name)) return name;
+  const login = card.login.toLowerCase();
+  if (login.length <= 22) return login;
+  // local-bengaluru-will-the-current-gov-mrqn8rr9 → local-bengaluru…mrqn8rr9
+  return `${login.slice(0, 14)}…${login.slice(-7)}`;
+}
 
 export default function DistributionPanel({ card }: { card: Card }) {
   const accent = resolveResultTheme(card).ink;
@@ -23,6 +33,7 @@ export default function DistributionPanel({ card }: { card: Card }) {
   const hFor = (c: number) => (Math.sqrt(c) / Math.sqrt(maxCount)) * (H - PAD_TOP);
 
   const meX = xFor(card.overall + 0.5);
+  const label = markerLabel(card);
 
   // "Top X%" = share of the population rated at least this card's overall. When
   // nothing in the sample reaches it, the honest claim is the rule-of-three
@@ -34,10 +45,10 @@ export default function DistributionPanel({ card }: { card: Card }) {
     return { atOrAbove, label: `Top ${atOrAbove > 0 ? "" : "< "}${fmtPct(pct)}%` };
   };
   const all = top(DIST_COUNTS, DIST_N);
-  const act = top(DIST_ACTIVE_COUNTS, DIST_ACTIVE_N);
+  const live = top(DIST_ACTIVE_COUNTS, DIST_ACTIVE_N);
   const tipText =
-    `Higher than ${(DIST_N - all.atOrAbove).toLocaleString()} of ${DIST_N.toLocaleString()} randomly sampled profiles, ` +
-    `and ${(DIST_ACTIVE_N - act.atOrAbove).toLocaleString()} of the ${DIST_ACTIVE_N.toLocaleString()} who were active in the past year.`;
+    `Higher OVR than ${(DIST_N - all.atOrAbove).toLocaleString()} of ${DIST_N.toLocaleString()} randomly sampled markets, ` +
+    `and ${(DIST_ACTIVE_N - live.atOrAbove).toLocaleString()} of the ${DIST_ACTIVE_N.toLocaleString()} live (recently active) markets.`;
 
   return (
     <section className="rounded-2xl border border-white/[0.06] bg-white/[0.02] p-[16px]">
@@ -45,7 +56,12 @@ export default function DistributionPanel({ card }: { card: Card }) {
         <span className="h-[2px] w-[16px] rounded-full" style={{ background: accent }} />
         <h3 className="font-display text-[11px] font-bold tracking-[.22em] text-ink-faint">DISTRIBUTION</h3>
       </div>
-      <svg viewBox={`0 0 ${W} ${H + 16}`} className="w-full" role="img" aria-label={`Overall rating ${card.overall} versus a random sample of ${DIST_N} profiles`}>
+      <svg
+        viewBox={`0 0 ${W} ${H + 16}`}
+        className="w-full"
+        role="img"
+        aria-label={`Overall rating ${card.overall} versus a random sample of ${DIST_N} markets`}
+      >
         {DIST_COUNTS.map((c, i) =>
           c === 0 ? null : (
             <rect
@@ -59,7 +75,7 @@ export default function DistributionPanel({ card }: { card: Card }) {
             />
           ),
         )}
-        {/* this card */}
+        {/* this market */}
         <line x1={meX} y1={PAD_TOP - 2} x2={meX} y2={H} stroke={accent} strokeWidth={1.4} strokeDasharray="3 2.5" opacity={0.9} />
         <circle cx={meX} cy={H} r={3} fill={accent} />
         <text
@@ -69,9 +85,9 @@ export default function DistributionPanel({ card }: { card: Card }) {
           fill={accent}
           fontSize={9.5}
           fontWeight={700}
-          letterSpacing={1}
+          letterSpacing={0.4}
         >
-          {card.login.toLowerCase()} · {card.overall}
+          {label} · {card.overall}
         </text>
         {/* axis labels */}
         {[50, 60, 70, 80, 90, 100].map((x) => (
@@ -89,9 +105,9 @@ export default function DistributionPanel({ card }: { card: Card }) {
             <span className="ml-[6px]">of markets</span>
             <span aria-hidden className="mx-[8px] inline-block h-[10px] w-px bg-white/15 align-[-1px]" />
             <span className="font-display text-[11px] font-bold tracking-[.14em]" style={{ color: accent }}>
-              {act.label.toUpperCase()}
+              {live.label.toUpperCase()}
             </span>
-            <span className="ml-[6px]">of active devs</span>
+            <span className="ml-[6px]">of live markets</span>
           </span>
         </Tip>
       </p>

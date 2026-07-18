@@ -90,7 +90,18 @@ export async function scoutCard(username: string): Promise<Card> {
   const existing = inflight.get(login);
   if (existing) return existing;
 
-  const pending = buildFresh(username, login).finally(() => inflight.delete(login));
+  const pending = (async () => {
+    try {
+      return await buildFresh(username, login);
+    } catch (e) {
+      // Private hyper-local predictions often 404 on public getDuelById —
+      // fall back to the stored local-* card that published this duelId.
+      const { findLocalPredictionByDuelId } = await import("./local/store");
+      const row = await findLocalPredictionByDuelId(username.trim());
+      if (row?.card) return row.card;
+      throw e;
+    }
+  })().finally(() => inflight.delete(login));
   inflight.set(login, pending);
   return pending;
 }

@@ -10,7 +10,6 @@ import {
   summarizeLocalProblemForCrawl,
 } from "./openai";
 import { emitProgress, type ResearchProgress } from "./progress";
-import { embedRemoteImageAsDataUrl } from "@/lib/media/embedImage";
 import { cardHasDisplayArt } from "@/lib/media/photoAvatar";
 import { hasAnakinCredentials } from "./config";
 
@@ -165,17 +164,16 @@ export async function createHyperLocalPrediction(input: {
 
   if (sourceImage) {
     emitProgress(input.onProgress, "card", "Pasting Anakin story photo onto card…");
-    const embedded = await embedRemoteImageAsDataUrl(sourceImage);
-    const avatarUrl =
-      embedded && embedded.length <= 120_000 ? embedded : sourceImage;
+    // Keep http on the card for durable /local-* opens (data: embeds get stripped in Redis).
+    // Preview still looks good via /api/img proxy.
     bundle = {
       ...bundle,
       card: {
         ...bundle.card,
-        avatarUrl,
+        avatarUrl: sourceImage,
         cardImageUrl: null,
       },
-      hit,
+      hit: { ...hit, imageUrl: sourceImage },
     };
     emitProgress(input.onProgress, "card", "Story photo on FUT plate");
   } else if (!cardHasDisplayArt(bundle.card)) {
@@ -214,6 +212,7 @@ export async function createHyperLocalPrediction(input: {
     hit: bundle.hit,
     card: bundle.card,
     createdAt: Date.now(),
+    deadlineAt: bundle.card.market?.scoutDeadlineAt,
   });
 
   emitProgress(input.onProgress, "done", "Card ready", bundle.sharePath);

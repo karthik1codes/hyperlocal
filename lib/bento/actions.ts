@@ -224,39 +224,55 @@ export async function estimateAndPlaceBet(input: {
     throwScout("notfound", `Could not load market ${input.duelId}: ${formatBentoError(e)}`);
   });
 
+  const status = Number(duel.status ?? 0);
+  const endsIn = Number(duel.endsIn ?? 0);
+  const d = duel as Record<string, unknown>;
+  const startRaw = Number(
+    (d.startAt as number | undefined) ?? (d.startTime as number | undefined) ?? 0,
+  );
+  const startMs =
+    startRaw > 0 ? (startRaw < 1e12 ? startRaw * 1000 : startRaw) : 0;
+  const waitMs = startMs > 0 ? startMs - Date.now() : 0;
+
+  // Private / pre-start catalogs often report status=-1 even while the market is valid
+  // and estimateBuy works. Treat future startTime as "not open yet", not cancelled.
+  if (waitMs > 120_000) {
+    const mins = Math.ceil(waitMs / 60_000);
+    throw {
+      type: "invalid" as const,
+      message: `Market not open yet — opens in ~${mins} min.`,
+      code: "MARKET_NOT_STARTED",
+      opensInMs: waitMs,
+      opensAt: startMs,
+    };
+  }
+  if (waitMs > 0) {
+    await new Promise((r) => setTimeout(r, waitMs + 2_500));
+  }
+
   const { isMarketTradeable } = await import("./tradeable");
+  // Soften catalog -1 when startTime is unknown or we're at/near open.
+  // Truly dead: startTime well in the past + status=-1.
+  const statusForCheck =
+    status >= 0
+      ? status
+      : startMs === 0 || startMs > Date.now() - 90_000
+        ? 1
+        : status;
   const tradeable = isMarketTradeable({
-    status: duel.status,
+    status: statusForCheck,
     endsIn: duel.endsIn,
     duelType: duel.duelType,
   });
   if (!tradeable.ok) {
-    throwScout("invalid", tradeable.reason);
-  }
-
-  const status = Number(duel.status ?? 0);
-  const endsIn = Number(duel.endsIn ?? 0);
-
-  const startRaw = Number(duel.startAt ?? duel.startTime ?? 0);
-  if (startRaw > 0) {
-    const startMs = startRaw < 1e12 ? startRaw * 1000 : startRaw;
-    const waitMs = startMs - Date.now();
-    // Short waits: hold the request. Longer waits: tell the client to retry after open
-    // (Bento createDuel requires a future startTime — often ~30 min).
-    if (waitMs > 120_000) {
-      const mins = Math.ceil(waitMs / 60_000);
-      const err = {
+    if (status < 0) {
+      throw {
         type: "invalid" as const,
-        message: `Market not open yet — opens in ~${mins} min.`,
-        code: "MARKET_NOT_STARTED",
-        opensInMs: waitMs,
-        opensAt: startMs,
+        message: tradeable.reason,
+        code: "MARKET_DEAD",
       };
-      throw err;
     }
-    if (waitMs > 0) {
-      await new Promise((r) => setTimeout(r, waitMs + 2_500));
-    }
+    throwScout("invalid", tradeable.reason);
   }
 
   const marketMode =
@@ -624,26 +640,22 @@ export async function createVersusMarket(input: {
 /**
  * Bento `createDuel` only accepts sport categories (Cricket, Football, …) —
  * not Hyper-Local / Politics / Transit. We map into an allowed sport for the API
- * and keep the real topic in description/tags.
+ * and keep the real topic in description/tags (+ display via preferMarketDisplayCategory).
  */
-export const BENTO_DUEL_CATEGORIES = [
-  "Cricket",
-  "Football",
-  "Basketball",
-  "American Football",
-  "Tennis",
-  "Baseball",
-  "Hockey",
-  "Formula 1",
-] as const;
-
-export type BentoDuelCategory = (typeof BENTO_DUEL_CATEGORIES)[number];
+export {
+  BENTO_DUEL_CATEGORIES,
+  BENTO_SPORT_CATEGORIES,
+  isBentoSportCategory,
+  preferMarketDisplayCategory,
+  type BentoDuelCategory,
+} from "./category";
+import { BENTO_SPORT_CATEGORIES, type BentoDuelCategory } from "./category";
 
 /** Map our card labels onto a category Bento will accept on createDuel. */
 export function toBentoDuelCategory(raw?: string | null): BentoDuelCategory {
   const s = (raw || "").trim().toLowerCase();
   if (!s) return "Cricket";
-  for (const c of BENTO_DUEL_CATEGORIES) {
+  for (const c of BENTO_SPORT_CATEGORIES) {
     if (c.toLowerCase() === s) return c;
   }
   // Loose aliases from Gemini / local drafts
@@ -663,12 +675,12 @@ export function toBentoDuelCategory(raw?: string | null): BentoDuelCategory {
  * Mint a YES/NO credits prediction (hyper-local → live bets).
  *
  * Bento rules:
- * - startTime ≥ ~5 min (on-chain floor). Near-floor values can pass HTTP then
- *   revert → HTTP 500 "Pre-flight simulation failed".
+ * - startTime ≥ ~5 min (on-chain floor). Values *at* the floor often pass HTTP then
+ *   revert → "Pre-flight simulation failed".
  * - Public markets need ~30 min bootstrap or they get cancelled.
- * - Private markets skip bootstrap → ~6 min is enough for create + bet.
+ * - Private markets skip bootstrap — we open just above the floor so bets unlock ASAP.
  *
- * Override with BENTO_MARKET_OPEN_DELAY_MS (clamped to ≥ 6 min).
+ * Override with BENTO_MARKET_OPEN_DELAY_MS (clamped to ≥ 5 min floor).
  */
 export async function createPredictionMarket(input: {
   token: string;
@@ -683,11 +695,12 @@ export async function createPredictionMarket(input: {
   const sdk = authedSdk(input.token);
   const days = Math.max(1, Math.min(365, Math.floor(input.deadlineDays ?? 90)));
   const ONCHAIN_FLOOR_MS = 5 * 60_000;
-  const SAFE_PRIVATE_MS = ONCHAIN_FLOOR_MS + 60_000; // 6 min — above floor
+  // Small cushion above the floor — lowest delay that usually survives pre-flight
+  const FAST_PRIVATE_MS = ONCHAIN_FLOOR_MS + 90_000; // 6m30s — 5m45s was failing create on testnet
   const envDelay = Number(process.env.BENTO_MARKET_OPEN_DELAY_MS);
   const OPEN_DELAY_MS = Math.max(
-    SAFE_PRIVATE_MS,
-    Number.isFinite(envDelay) && envDelay > 0 ? envDelay : SAFE_PRIVATE_MS,
+    ONCHAIN_FLOOR_MS + 60_000, // never below 6 min for reliability
+    Number.isFinite(envDelay) && envDelay > 0 ? envDelay : FAST_PRIVATE_MS,
   );
   const question = input.question.trim().slice(0, 200);
   if (question.length < 8) {
@@ -745,13 +758,19 @@ export async function createPredictionMarket(input: {
     const msg = formatBentoError(e);
     if (!needsRetry(msg)) throw e;
     try {
-      // Bump further above the floor
+      // More cushion if pre-flight rejected the first startTime
       result = await attempt(8 * 60_000, "private");
     } catch (e2) {
       const msg2 = formatBentoError(e2);
       if (!needsRetry(msg2)) throw e2;
-      // Last resort: public bootstrap window
-      result = await attempt(31 * 60_000, "public");
+      try {
+        result = await attempt(10 * 60_000, "private");
+      } catch (e3) {
+        const msg3 = formatBentoError(e3);
+        if (!needsRetry(msg3)) throw e3;
+        // Last resort: public bootstrap window
+        result = await attempt(31 * 60_000, "public");
+      }
     }
   }
 
