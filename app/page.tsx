@@ -1,6 +1,7 @@
 import Background from "@/components/Background";
 import HyperLocalShell from "@/components/HyperLocalShell";
 import { getScoutCount } from "@/lib/analytics";
+import { loadHomeCards } from "@/lib/scout";
 import { listRecentLocalCards } from "@/lib/local/store";
 import { SAMPLE_CARDS } from "@/lib/bento/samples";
 import { siteOrigin } from "@/lib/share";
@@ -36,6 +37,17 @@ const JSON_LD = {
   ],
 };
 
+function isJunkTitle(name: string): boolean {
+  const t = name.trim();
+  if (t.length < 8) return true;
+  if (/\[demo/i.test(t)) return true;
+  if (/swipebet/i.test(t)) return true;
+  if (/dependency/i.test(t)) return true;
+  if (/pre-start betting/i.test(t)) return true;
+  if (/qa lifecycle/i.test(t)) return true;
+  return false;
+}
+
 /** Feature the Bengaluru CM prediction ahead of other local mints (e.g. zoning). */
 function isFeaturedLocal(card: Card): boolean {
   const q = `${card.login} ${card.market?.question || ""} ${card.name}`.toLowerCase();
@@ -46,19 +58,50 @@ function isFeaturedLocal(card: Card): boolean {
   );
 }
 
-function pinFeaturedFirst(cards: Card[]): Card[] {
-  const featured = cards.find(isFeaturedLocal);
-  if (!featured) return cards;
-  return [featured, ...cards.filter((c) => c.login !== featured.login)];
+/**
+ * Side pack: recent hyper-local mints first, then live Bento markets —
+ * same SideCardFan design as before (no separate /markets CardFan page).
+ */
+function buildHomePack(local: Card[], bento: Card[], limit = 5): Card[] {
+  const out: Card[] = [];
+  const used = new Set<string>();
+  const push = (c: Card) => {
+    if (used.has(c.login) || isJunkTitle(c.name)) return;
+    used.add(c.login);
+    out.push(c);
+  };
+
+  const featured = local.find(isFeaturedLocal);
+  if (featured) push(featured);
+
+  for (const c of local) {
+    push(c);
+    if (out.length >= Math.min(3, limit)) break;
+  }
+  for (const c of bento) {
+    push(c);
+    if (out.length >= limit) return out;
+  }
+  for (const c of local) {
+    push(c);
+    if (out.length >= limit) return out;
+  }
+  for (const c of SAMPLE_CARDS) {
+    push(c);
+    if (out.length >= limit) return out;
+  }
+  return out;
 }
 
 export default async function Home() {
   let scoutCount: number | null = null;
-  let recentCards: Card[] = [];
+  let recentLocal: Card[] = [];
+  let bentoCards: Card[] = [];
   try {
-    [scoutCount, recentCards] = await Promise.all([
+    [scoutCount, recentLocal, bentoCards] = await Promise.all([
       getScoutCount(),
       listRecentLocalCards(8),
+      loadHomeCards(10),
     ]);
   } catch (e) {
     console.error(
@@ -66,12 +109,8 @@ export default async function Home() {
       e instanceof Error ? e.stack || e.message : e,
     );
   }
-  // Keep a fanned pack on the side even before the first local mint.
-  const sideCards = pinFeaturedFirst(
-    recentCards.length >= 3
-      ? recentCards
-      : [...recentCards, ...SAMPLE_CARDS].slice(0, 5),
-  );
+
+  const sideCards = buildHomePack(recentLocal, bentoCards, 5);
 
   return (
     <div className="relative min-h-screen overflow-x-hidden text-ink">

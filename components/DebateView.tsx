@@ -106,12 +106,6 @@ export default function DebateView() {
               HOME
             </Link>
             <Link
-              href="/markets"
-              className="font-display rounded-lg border border-line bg-white/[0.04] px-3 py-1.5 text-[12px] tracking-[.12em] text-ink-soft transition hover:border-brand/40 hover:text-ink"
-            >
-              MARKETS
-            </Link>
-            <Link
               href="/club"
               className="font-display rounded-lg border border-brand/35 bg-brand/10 px-3 py-1.5 text-[12px] tracking-[.12em] text-brand-hi transition hover:bg-brand/20"
             >

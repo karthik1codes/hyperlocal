@@ -11,6 +11,11 @@ const nextConfig: NextConfig = {
   // doesn't try to bundle browser binaries into the serverless function.
   serverExternalPackages: ["sharp", "playwright", "playwright-core"],
 
+  async redirects() {
+    // Old markets landing (CardFan / AppShell) → home SideCardFan pack
+    return [{ source: "/markets", destination: "/", permanent: true }];
+  },
+
   async rewrites() {
     // Pretty embed URL: /<id>.png -> the card image route. The id charset is
     // alphanumerics + hyphens (duel / market ids), and it only matches the .png

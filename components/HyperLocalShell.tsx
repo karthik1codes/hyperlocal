@@ -1,7 +1,6 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, useTransition } from "react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import Mascot from "@/components/Mascot";
 import LocalLabForm from "@/components/LocalLabForm";
@@ -107,12 +106,6 @@ export default function HyperLocalShell({
           </div>
 
           <div className="flex flex-wrap items-start justify-end gap-2 sm:gap-3">
-            <Link
-              href="/markets"
-              className="font-display rounded-lg border border-line bg-white/[0.04] px-3 py-1.5 text-[12px] tracking-[.12em] text-ink-soft transition hover:border-brand/40 hover:text-ink"
-            >
-              MARKETS
-            </Link>
             <button
               type="button"
               onClick={() => setBetsOpen(true)}
@@ -188,7 +181,7 @@ export default function HyperLocalShell({
             <div className="font-display mb-2 text-[11px] tracking-[.2em] text-brand">
               {cards.some((c) => c.login.startsWith("local-"))
                 ? "YOUR LOCAL PACK"
-                : "SCOUT PACK"}
+                : "LIVE MARKETS"}
             </div>
             <SideCardFan cards={cards} onPick={handleScout} />
             <p className="mt-3 max-w-[280px] text-center text-[11px] leading-snug text-ink-faint">

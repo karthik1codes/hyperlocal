@@ -26,8 +26,7 @@ Public books (Polymarket-scale) optimize for global volume — elections, crypto
 
 | Flow | What you get |
 |------|----------------|
-| **Hyper-local lab** (`/`) | Region + problem → crawl → YES/NO card → shareable FUT plate |
-| **Live markets** (`/markets`) | Scout native Bento duels as rated cards; bet with Free-to-Play credits |
+| **Hyper-local lab** (`/`) | Region + problem → crawl → YES/NO card → shareable FUT plate; side pack mixes local mints + live Bento markets |
 | **Open as prediction** | Private Bento YES/NO duel from a `local-…` card (~6 min on-chain open floor) |
 | **Club / debate** (`/club`) | Scout agents + LLM debate over your squad |
 
@@ -170,8 +169,7 @@ Hyper-local cards use the same plate language after research; native Bento duels
 
 | Path | Role |
 |------|------|
-| `/` | Hyper-local lab + recent cards |
-| `/markets` | Live Bento market fan |
+| `/` | Hyper-local lab + SideCardFan pack (local + live markets) |
 | `/[id]` or `/u/[id]` | Card report + bet UI |
 | `/club` | Squad + scout agents |
 | `/club/debate` | Multi-agent debate |
