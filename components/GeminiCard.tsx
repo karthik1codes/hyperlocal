@@ -2,6 +2,7 @@
 
 import { memo, type CSSProperties } from "react";
 import type { Card } from "@/lib/scoring/types";
+import { isUsablePhotoAvatar } from "@/lib/media/photoAvatar";
 
 /**
  * Full-bleed card: Gemini (or other) generated FUT plate — no CSS overlay template.
@@ -46,14 +47,8 @@ export default memo(GeminiCard);
 export function hasGeminiCardArt(card: Card): boolean {
   const art = card.cardImageUrl;
   if (!art || art.length < 32) return false;
-  // Prefer CSS plate + pasted crawl photo over AI plates that leave silhouettes
-  const avatar = (card.avatarUrl || "").trim();
-  if (
-    avatar.startsWith("data:image/") ||
-    /^https?:\/\//i.test(avatar) ||
-    avatar.startsWith("/api/img")
-  ) {
-    return false;
-  }
+  // Prefer CSS plate + real crawl photo. The green "LOCAL" SVG fallback must NOT
+  // count as a photo — that hid AI plates and left empty cards.
+  if (isUsablePhotoAvatar(card.avatarUrl)) return false;
   return true;
 }

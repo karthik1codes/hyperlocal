@@ -6,12 +6,14 @@ import { canResearchNews } from "./config";
 import {
   draftCardWithOpenAI,
   generateCardImageWithOpenAI,
+  generateScenePortraitWithOpenAI,
   hasOpenAICredentials,
   speakLocalProblemWithOpenAI,
   summarizeLocalProblemForCrawl,
 } from "./openai";
 import { emitProgress, type ResearchProgress } from "./progress";
 import { embedRemoteImageAsDataUrl } from "@/lib/media/embedImage";
+import { cardHasDisplayArt } from "@/lib/media/photoAvatar";
 
 export type { LocalPredictionBundle };
 export type { ResearchProgressEvent, ResearchStepId } from "./progress";
@@ -54,7 +56,7 @@ export async function createHyperLocalPrediction(input: {
 
   emitProgress(input.onProgress, "search", "Checking for existing prediction…");
   const existing = await findExistingLocalPrediction({ region, topic });
-  if (existing) {
+  if (existing && cardHasDisplayArt(existing.card)) {
     emitProgress(
       input.onProgress,
       "done",
@@ -62,6 +64,14 @@ export async function createHyperLocalPrediction(input: {
       existing.login,
     );
     return bundleFromStored(existing);
+  }
+  if (existing && !cardHasDisplayArt(existing.card)) {
+    emitProgress(
+      input.onProgress,
+      "card",
+      "Old card had no photo — reminting with story image…",
+      existing.login,
+    );
   }
 
   let crawlTopic = topic;
@@ -78,7 +88,7 @@ export async function createHyperLocalPrediction(input: {
     }
   }
 
-  const hit = await researchHyperLocalNews({
+  let hit = await researchHyperLocalNews({
     region,
     topic: crawlTopic,
     onProgress: input.onProgress,
@@ -89,7 +99,7 @@ export async function createHyperLocalPrediction(input: {
     topic,
     sourceUrl: hit.url,
   });
-  if (byUrl) {
+  if (byUrl && cardHasDisplayArt(byUrl.card)) {
     emitProgress(
       input.onProgress,
       "done",
@@ -124,6 +134,19 @@ export async function createHyperLocalPrediction(input: {
   }
 
   emitProgress(input.onProgress, "card", "Scoring hyper-local card…");
+
+  // Resolve a problem-related photo (Anakin / OG / Wikipedia) before scoring art
+  const { resolveStoryImage } = await import("./story-image");
+  const resolvedImage = await resolveStoryImage({
+    region,
+    topic: crawlTopic,
+    hit,
+    onProgress: input.onProgress,
+  });
+  if (resolvedImage) {
+    hit = { ...hit, imageUrl: resolvedImage };
+  }
+
   let bundle = cardFromLocalResearch({
     region,
     topic,
@@ -132,31 +155,63 @@ export async function createHyperLocalPrediction(input: {
   });
 
   // Always keep the crawled source photo on the card when present
-  const sourceImage =
+  let sourceImage =
     hit.imageUrl && hit.imageUrl.startsWith("http") ? hit.imageUrl : null;
 
-  if (sourceImage) {
-    emitProgress(input.onProgress, "card", "Pasting source photo onto card…");
+  // If crawl found nothing, paint a scene portrait so the plate isn't "LOCAL"
+  if (!sourceImage && hasOpenAICredentials()) {
+    emitProgress(input.onProgress, "gemini", "Generating story scene photo…");
+    const painted = await generateScenePortraitWithOpenAI({
+      region,
+      topic,
+      hit,
+      draft,
+    });
+    if (painted) {
+      sourceImage = painted;
+      hit = { ...hit, imageUrl: painted.startsWith("http") ? painted : hit.imageUrl };
+      bundle = {
+        ...bundle,
+        card: {
+          ...bundle.card,
+          avatarUrl: painted,
+          cardImageUrl: null,
+        },
+        hit,
+      };
+      emitProgress(input.onProgress, "card", "Story scene ready for plate");
+    }
+  }
+
+  if (sourceImage && !sourceImage.startsWith("data:")) {
+    emitProgress(input.onProgress, "card", "Pasting story photo onto card…");
     const embedded = await embedRemoteImageAsDataUrl(sourceImage);
-    // Keep http when the embed is huge — megabyte data: URLs 500 production RSC.
     const avatarUrl =
       embedded && embedded.length <= 120_000 ? embedded : sourceImage;
     bundle = {
       ...bundle,
       card: {
         ...bundle.card,
-        // Prefer compact embed; else http (+ /api/img proxy in UI).
         avatarUrl,
-        // Don't use AI full-plate when we have a real photo — models often leave
-        // a grey silhouette. PlayerCard composites the photo onto the FUT plate.
         cardImageUrl: null,
       },
+      hit,
+    };
+  } else if (sourceImage?.startsWith("data:")) {
+    bundle = {
+      ...bundle,
+      card: {
+        ...bundle.card,
+        avatarUrl: sourceImage,
+        cardImageUrl: null,
+      },
+      hit,
     };
   }
 
-  // Only generate a full AI plate when there is no source photo to paste
-  if (hasOpenAICredentials() && !sourceImage) {
-    emitProgress(input.onProgress, "gemini", "Painting FUT card…");
+  // Full AI plate only when we still have no usable portrait
+  if (hasOpenAICredentials() && !cardHasDisplayArt(bundle.card)) {
+    emitProgress(input.onProgress, "gemini", "Painting FUT card with story scene…");
     const cardImageUrl = await generateCardImageWithOpenAI({
       region,
       topic,
@@ -177,14 +232,17 @@ export async function createHyperLocalPrediction(input: {
         card: {
           ...bundle.card,
           cardImageUrl,
+          // clear LOCAL placeholder so GeminiCard is allowed to render
+          avatarUrl: "",
         },
+        hit,
       };
       emitProgress(input.onProgress, "gemini", "Card art ready");
     } else {
       emitProgress(input.onProgress, "gemini", "Opening scored card");
     }
-  } else if (sourceImage) {
-    emitProgress(input.onProgress, "card", "Photo pasted on FUT plate");
+  } else if (cardHasDisplayArt(bundle.card) && !bundle.card.cardImageUrl) {
+    emitProgress(input.onProgress, "card", "Story photo pasted on FUT plate");
   }
 
   let audioUrl: string | null = null;

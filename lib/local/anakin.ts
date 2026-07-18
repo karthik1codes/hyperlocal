@@ -479,7 +479,7 @@ async function researchViaHttp(input: {
   emitProgress(input.onProgress, "connect", "Using HTTP news scrape (no browser)…");
   const socialPromise = fetchSocialCorroboration(query, input.onProgress);
 
-  const candidates: { title: string; href: string }[] = [];
+  const candidates: { title: string; href: string; desc?: string; image?: string }[] = [];
 
   // 1) Google News RSS — reliable on Vercel serverless
   try {
@@ -499,12 +499,18 @@ async function researchViaHttp(input: {
         const title = stripTags(block.match(/<title>([\s\S]*?)<\/title>/i)?.[1] || "");
         const link = stripTags(block.match(/<link>([\s\S]*?)<\/link>/i)?.[1] || "");
         const desc = stripTags(block.match(/<description>([\s\S]*?)<\/description>/i)?.[1] || "");
+        const media =
+          block.match(/<media:content[^>]+url=["']([^"']+)["']/i)?.[1] ||
+          block.match(/<enclosure[^>]+url=["']([^"']+)["']/i)?.[1] ||
+          null;
         if (title.length < 12 || !link.startsWith("http")) continue;
-        candidates.push({ title: title.slice(0, 180), href: link });
-        if (desc && candidates.length === 1) {
-          // stash first description via title side-channel below
-          (candidates[0] as { title: string; href: string; desc?: string }).desc = desc.slice(0, 420);
-        }
+        const row: { title: string; href: string; desc?: string; image?: string } = {
+          title: title.slice(0, 180),
+          href: link,
+        };
+        if (desc) row.desc = desc.slice(0, 420);
+        if (media?.startsWith("http")) row.image = media;
+        candidates.push(row);
       }
     }
   } catch (e) {
@@ -552,14 +558,19 @@ async function researchViaHttp(input: {
     );
   }
 
-  const top = candidates[0] as { title: string; href: string; desc?: string };
+  const top = candidates[0] as {
+    title: string;
+    href: string;
+    desc?: string;
+    image?: string;
+  };
   emitProgress(input.onProgress, "pick", "Top story selected", top.title.slice(0, 100));
   emitProgress(input.onProgress, "open", "Fetching article…", top.href.slice(0, 120));
 
   let title = top.title;
   let summary =
     top.desc || `Local coverage on ${input.region}: ${top.title}.`;
-  let imageUrl: string | null = null;
+  let imageUrl: string | null = top.image || null;
   let finalUrl = top.href;
 
   try {

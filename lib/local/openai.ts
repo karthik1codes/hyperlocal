@@ -333,6 +333,67 @@ function plateStyleForFinish(finishLabel: string): {
 }
 
 /**
+ * Generate a news-scene portrait (not a full FUT plate) for PlayerCard avatar
+ * when Anakin/crawl couldn't find a photo.
+ */
+export async function generateScenePortraitWithOpenAI(input: {
+  region: string;
+  topic: string;
+  hit: LocalNewsHit;
+  draft?: CardDraft | null;
+}): Promise<string | null> {
+  const apiKey = openaiApiKey();
+  if (!apiKey) return null;
+
+  const summary = (input.draft?.summary || input.hit.summary || input.hit.title).slice(0, 220);
+  const prompt = `Photorealistic editorial news photograph for a prediction-market trading card portrait.
+Location: ${input.region}. Story: "${input.hit.title}".
+Context: ${summary}
+Topic: ${input.topic}.
+Vertical portrait crop, cinematic lighting, filled frame with real-world scene (streets, buildings, crowds, landmarks, or political setting matching the story).
+STRICT: No grey silhouette, no empty avatar, no faceless mannequin, no FIFA card chrome, no text overlays, no logos.`;
+
+  const model = openaiImageModel();
+  try {
+    const isGptImage = /gpt-image/i.test(model);
+    const body: Record<string, unknown> = {
+      model,
+      prompt: prompt.slice(0, 3200),
+      n: 1,
+    };
+    if (isGptImage) {
+      body.size = "1024x1024";
+      body.quality = process.env.OPENAI_IMAGE_QUALITY?.trim() || "medium";
+    } else {
+      body.size = "1024x1024";
+      body.response_format = "b64_json";
+      body.quality = "standard";
+    }
+
+    const res = await fetch("https://api.openai.com/v1/images/generations", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const errBody = await res.text().catch(() => "");
+      console.warn(`[openai-scene] HTTP ${res.status}: ${errBody.slice(0, 240)}`);
+      return null;
+    }
+    const data = (await res.json()) as {
+      data?: Array<{ b64_json?: string; url?: string }>;
+    };
+    return await rowToDataUrl(data.data?.[0]);
+  } catch (e) {
+    console.warn("[openai-scene]", e instanceof Error ? e.message : e);
+    return null;
+  }
+}
+
+/**
  * Generate a full FUT trading card image in the style of public/cards/*.png plates.
  * When the crawl found a source photo, it is attached as the center-art reference.
  */
@@ -375,13 +436,14 @@ Exact text that MUST appear clearly on the card (bold condensed sans-serif):
 Art (center of plate): ${
     sourceImageUrl
       ? "USE THE ATTACHED SOURCE NEWS PHOTO as the main center artwork (crop/compose into the plate — keep recognizable scene from the article)."
-      : `cinematic hyper-local scene for ${input.region}`
-  } Inspired by "${input.hit.title}" (${summary.slice(0, 180)}). No real celebrity likenesses beyond what is in the source photo.
+      : `FULL photographic news SCENE for the story — ${input.region}: "${input.hit.title}". Show real-world context (streets, buildings, crowds, landmarks, protests, or politics) filling the entire portrait window. NEVER a blank grey person silhouette, NEVER empty placeholder avatar, NEVER generic faceless mannequin.`
+  } Inspired by (${summary.slice(0, 180)}). No real celebrity likenesses beyond what is in the source photo.
 Small flag hint for ${card.country || input.region}. Finish: ${card.finishLabel}.
 
 Hard rules:
 - Full card only (rating + art + name + stats baked in).
 - Do not invent different OVR/stats than listed.
+- The center MUST be a filled news photo / cinematic scene matching the local problem — not a silhouette.
 - No extra UI chrome, QR codes, or other brand watermarks.
 - Vertical portrait composition, shield silhouette.`;
 

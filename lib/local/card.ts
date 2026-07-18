@@ -64,7 +64,7 @@ function signalsFromLocal(input: {
     name,
     avatarUrl:
       (input.hit.imageUrl && input.hit.imageUrl.startsWith("http") && input.hit.imageUrl) ||
-      AVATAR_FALLBACK,
+      "",
     location: input.region,
     followers: Math.round(400 + freshness * 1800),
     account_age_years: 0.05,

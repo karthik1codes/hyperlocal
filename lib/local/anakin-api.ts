@@ -97,11 +97,21 @@ export async function researchViaAnakinSearch(input: {
 
   emitProgress(input.onProgress, "extract", "Anakin summary ready");
 
+  // Pull a real article photo so the FUT card isn't an empty silhouette
+  let imageUrl: string | null = null;
+  try {
+    const { extractOgImageFromUrl, extractImageViaAnakin } = await import("./story-image");
+    imageUrl = await extractOgImageFromUrl(top.url);
+    if (!imageUrl) imageUrl = await extractImageViaAnakin(top.url);
+  } catch (e) {
+    console.warn("[anakin/search] image:", e instanceof Error ? e.message : e);
+  }
+
   return {
     title,
     url: top.url,
     summary,
-    imageUrl: null,
+    imageUrl,
     sourceHost: hostOf(top.url),
     sources,
   };
@@ -126,7 +136,7 @@ export async function summarizeHitWithAnakin(
       headers: headers(),
       body: JSON.stringify({
         url: hit.url,
-        formats: ["summary"],
+        formats: ["summary", "markdown", "html"],
         useBrowser: false,
         country: "in",
       }),
@@ -148,14 +158,44 @@ export async function summarizeHitWithAnakin(
       id?: string;
       jobId?: string;
       markdown?: string;
+      html?: string;
+      ogImage?: string;
+      image?: string;
+      images?: Array<string | { url?: string }>;
     };
+
+    let imageUrl = hit.imageUrl;
+    if (!imageUrl) {
+      if (typeof data.ogImage === "string" && data.ogImage.startsWith("http")) {
+        imageUrl = data.ogImage;
+      } else if (typeof data.image === "string" && data.image.startsWith("http")) {
+        imageUrl = data.image;
+      } else if (Array.isArray(data.images)) {
+        for (const item of data.images) {
+          const u = typeof item === "string" ? item : item?.url;
+          if (u?.startsWith("http")) {
+            imageUrl = u;
+            break;
+          }
+        }
+      } else {
+        const blob = `${data.markdown || ""}\n${data.html || ""}`;
+        const md = blob.match(/!\[[^\]]*\]\((https?:\/\/[^)\s]+)\)/);
+        if (md?.[1]) imageUrl = md[1];
+      }
+    }
 
     if (data.summary && data.summary.trim().length > 40) {
       emitProgress(onProgress, "extract", "Summary refined");
       return {
         ...hit,
         summary: data.summary.replace(/\s+/g, " ").trim().slice(0, 480),
+        imageUrl: imageUrl || hit.imageUrl,
       };
+    }
+
+    if (imageUrl && imageUrl !== hit.imageUrl) {
+      return { ...hit, imageUrl };
     }
 
     // Async job accepted

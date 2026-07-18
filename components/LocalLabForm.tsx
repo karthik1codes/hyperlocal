@@ -6,6 +6,7 @@ import Link from "next/link";
 import { Mic, MicOff } from "lucide-react";
 import type { Card } from "@/lib/scoring/types";
 import { writeCardCache } from "@/hooks/useScout";
+import { upsertLocalMadeCard } from "@/lib/local/made-cards";
 import PlayerCard from "@/components/PlayerCard";
 
 type SpeechRecognitionLike = {
@@ -323,6 +324,15 @@ export default function LocalLabForm({
         // Keep the card in the browser so /local-* works even when Vercel
         // memory/Redis miss on the next request.
         writeCardCache(next.card);
+        upsertLocalMadeCard({
+          localLogin: next.card.login,
+          question: next.question || next.card.market?.question || next.card.name,
+          region: r,
+          overall: next.card.overall,
+          createdAt: Date.now(),
+          opensAt: null,
+          duelId: null,
+        });
         void fetch("/api/local/persist", {
           method: "POST",
           headers: { "Content-Type": "application/json" },

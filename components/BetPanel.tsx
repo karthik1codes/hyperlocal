@@ -7,6 +7,7 @@ import { isMarketTradeable } from "@/lib/bento/tradeable";
 import { useBentoWallet } from "@/hooks/useBentoWallet";
 import WalletSession from "@/components/WalletSession";
 import { BETS_CHANGED_EVENT } from "@/components/BetsSidebar";
+import { markLocalCardWarming } from "@/lib/local/made-cards";
 
 /** Platform floor from https://docs.bento.fun/guides/place-bet */
 const MIN_BET = 5;
@@ -282,17 +283,34 @@ export default function BetPanel({ card: initialCard }: { card: Card }) {
         duelId?: string;
         warning?: string;
         opensInMs?: number;
+        already?: boolean;
       };
       if (!res.ok || !data.card?.market) {
         throw new Error(data.error || "Could not open live prediction");
       }
       setCard(data.card);
       const delay = data.opensInMs ?? 6 * 60_000;
-      const openAt = Date.now() + delay;
-      setOpensAt(openAt);
+      const openAt = data.already ? null : Date.now() + delay;
+      if (openAt) setOpensAt(openAt);
+      const localLogin = card.login.startsWith("local-")
+        ? card.login
+        : data.card.login.startsWith("local-")
+          ? data.card.login
+          : card.login;
+      markLocalCardWarming({
+        localLogin,
+        duelId: data.duelId || data.card.market.duelId,
+        question:
+          data.card.market.question || data.card.name || card.market?.question || card.name,
+        opensAt: openAt ?? Date.now(),
+        region: data.card.country || card.country || "",
+        overall: data.card.overall,
+      });
       const mins = Math.max(1, Math.round(delay / 60_000));
       setStatus(
-        `Private prediction ready (${data.duelId?.slice(0, 14) ?? "ok"}…). Opens in ~${mins} min — waiting, then betting on your pick.`,
+        data.already
+          ? `Prediction already live (${data.duelId?.slice(0, 14) ?? "ok"}…).`
+          : `Private prediction ready (${data.duelId?.slice(0, 14) ?? "ok"}…). Opens in ~${mins} min — waiting, then betting on your pick.`,
       );
       return { card: data.card, opensAt: openAt };
     } catch (e) {
