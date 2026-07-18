@@ -41,6 +41,23 @@ describe("share service", () => {
     expect(cardUrl(card())).toBe("http://localhost:3000/demo-btc-100k?country=us");
   });
 
+  it("uses a public NEXT_PUBLIC_SITE_URL for share links (not localhost)", async () => {
+    vi.stubEnv("NEXT_PUBLIC_SITE_URL", "https://hyperlocal-mu.vercel.app");
+    const { cardUrl } = await import("@/lib/share");
+    expect(cardUrl(card({ country: "" }))).toBe(
+      "https://hyperlocal-mu.vercel.app/demo-btc-100k",
+    );
+  });
+
+  it("prefers VERCEL_URL when NEXT_PUBLIC_SITE_URL is loopback", async () => {
+    vi.stubEnv("NEXT_PUBLIC_SITE_URL", "http://localhost:3000");
+    vi.stubEnv("VERCEL_URL", "hyperlocal-mu.vercel.app");
+    const { cardUrl } = await import("@/lib/share");
+    expect(cardUrl(card({ country: "" }))).toBe(
+      "https://hyperlocal-mu.vercel.app/demo-btc-100k",
+    );
+  });
+
   it("omits the country param when the card has no flag", async () => {
     const { cardUrl } = await import("@/lib/share");
     expect(cardUrl(card({ country: "" }))).toBe("http://localhost:3000/demo-btc-100k");

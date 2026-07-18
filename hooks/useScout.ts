@@ -6,7 +6,8 @@ import type { Card } from "@/lib/scoring/types";
 const TTL = 3 * 60 * 60 * 1000;
 const cacheKey = (login: string) => `bento:card:${login.toLowerCase()}`;
 
-function readCache(login: string): Card | null {
+export function readCardCache(loginRaw: string): Card | null {
+  const login = loginRaw.trim().replace(/^@/, "").toLowerCase();
   try {
     const hit = JSON.parse(localStorage.getItem(cacheKey(login)) ?? "null");
     return hit && Date.now() - hit.t < TTL ? (hit.card as Card) : null;
@@ -19,9 +20,31 @@ function readCache(login: string): Card | null {
 // so the chosen country survives a re-scout within the TTL).
 export function writeCardCache(card: Card): void {
   try {
-    localStorage.setItem(cacheKey(card.login), JSON.stringify({ t: Date.now(), card }));
+    localStorage.setItem(
+      cacheKey(card.login),
+      JSON.stringify({ t: Date.now(), card }),
+    );
   } catch {
-    /* quota / private mode */
+    /* quota / private mode — strip huge data URLs and retry once */
+    try {
+      const slim = {
+        ...card,
+        avatarUrl:
+          card.avatarUrl?.startsWith("data:") && card.avatarUrl.length > 4_000
+            ? ""
+            : card.avatarUrl,
+        cardImageUrl:
+          card.cardImageUrl?.startsWith("data:") && card.cardImageUrl.length > 4_000
+            ? null
+            : card.cardImageUrl,
+      };
+      localStorage.setItem(
+        cacheKey(card.login),
+        JSON.stringify({ t: Date.now(), card: slim }),
+      );
+    } catch {
+      /* give up */
+    }
   }
 }
 
@@ -34,7 +57,7 @@ export function useScout() {
     if (loading) return false;
     const login = name.trim().replace(/^@/, "");
 
-    const cached = readCache(login);
+    const cached = readCardCache(login);
     if (cached) {
       setCard(cached);
       setError(null);

@@ -103,6 +103,8 @@ Create a `.env` or `.env.local` in the project root. **Never commit secrets.**
 ```bash
 BENTO_BUILDER_API_KEY=           # live markets + create/bet
 BENTO_URL=https://…              # optional; defaults to Bento API host
+# Public URL used in share links / OG / sitemap.
+# Local: http://localhost:3000  ·  Production: https://your-domain (never leave as localhost on Vercel)
 NEXT_PUBLIC_SITE_URL=http://localhost:3000
 REDIS_URL=                       # optional card cache + counters
 ```

@@ -42,22 +42,32 @@ function pushRecentLogin(login: string) {
   globalThis.__bentoLocalRecent = list.slice(0, RECENT_LIMIT);
 }
 
-export async function saveLocalPrediction(row: StoredLocalPrediction): Promise<void> {
+export async function saveLocalPrediction(row: StoredLocalPrediction): Promise<{ redis: boolean }> {
+  const slim = slimPredictionForStorage(row);
   const { redis } = await import("@/lib/redis");
-  const key = memKey(row.login);
-  const payload = JSON.stringify(row);
-  mem().set(key, { exp: Date.now() + TTL_SECONDS * 1000, row });
-  pushRecentLogin(row.login);
+  const key = memKey(slim.login);
+  const payload = JSON.stringify(slim);
+  mem().set(key, { exp: Date.now() + TTL_SECONDS * 1000, row: slim });
+  pushRecentLogin(slim.login);
 
-  if (!redis) return;
+  if (!redis) {
+    if (process.env.VERCEL) {
+      console.warn(
+        "[local/store] REDIS_URL missing on Vercel — local cards only live in this function instance until the browser re-persists them.",
+      );
+    }
+    return { redis: false };
+  }
   try {
     await redis.set(key, payload, "EX", TTL_SECONDS);
-    await redis.lrem(RECENT_KEY, 0, row.login.toLowerCase());
-    await redis.lpush(RECENT_KEY, row.login.toLowerCase());
+    await redis.lrem(RECENT_KEY, 0, slim.login.toLowerCase());
+    await redis.lpush(RECENT_KEY, slim.login.toLowerCase());
     await redis.ltrim(RECENT_KEY, 0, RECENT_LIMIT - 1);
     await redis.expire(RECENT_KEY, TTL_SECONDS);
+    return { redis: true };
   } catch (e) {
     console.warn("[local/store] redis write:", (e as Error).message);
+    return { redis: false };
   }
 }
 
@@ -89,6 +99,22 @@ export function slimCardForFan(card: Card): Card {
     !plate || (plate.startsWith("data:") && plate.length > 6_000) ? null : plate;
   if (slimAvatar === avatar && slimPlate === (card.cardImageUrl || null)) return card;
   return { ...card, avatarUrl: slimAvatar, cardImageUrl: slimPlate };
+}
+
+/** Strip huge data URLs so Redis / serverless memory can keep the prediction. */
+export function slimPredictionForStorage(row: StoredLocalPrediction): StoredLocalPrediction {
+  const card = slimCardForFan(row.card);
+  const img = row.hit.imageUrl || null;
+  return {
+    ...row,
+    card,
+    hit: {
+      ...row.hit,
+      summary: (row.hit.summary || "").slice(0, 2_000),
+      title: (row.hit.title || "").slice(0, 300),
+      imageUrl: img && img.startsWith("data:") ? null : img,
+    },
+  };
 }
 
 export async function loadLocalPrediction(loginRaw: string): Promise<StoredLocalPrediction | null> {

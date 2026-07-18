@@ -6,7 +6,53 @@ import type { Card } from "@/lib/scoring/types";
 
 export type SharePlatform = "x" | "linkedin" | "whatsapp";
 
-export const SITE = process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000";
+function isLoopbackHost(host: string): boolean {
+  const h = host.replace(/^\[|\]$/g, "").toLowerCase();
+  return h === "localhost" || h === "127.0.0.1" || h === "::1" || h.startsWith("localhost:");
+}
+
+function originFromUrl(raw: string | undefined | null): string | null {
+  const t = (raw || "").trim().replace(/\/$/, "");
+  if (!t) return null;
+  try {
+    const withProto = /^https?:\/\//i.test(t) ? t : `https://${t}`;
+    const u = new URL(withProto);
+    if (isLoopbackHost(u.host)) return null;
+    return u.origin;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Public site origin for share links / JSON-LD.
+ * Never emit localhost in shared URLs when a real deploy URL is available —
+ * NEXT_PUBLIC_SITE_URL was often unset, so shares baked in http://localhost:3000.
+ */
+export function siteOrigin(): string {
+  const fromEnv = originFromUrl(process.env.NEXT_PUBLIC_SITE_URL);
+  if (fromEnv) return fromEnv;
+
+  const fromVercel = originFromUrl(
+    process.env.NEXT_PUBLIC_VERCEL_URL ||
+      process.env.VERCEL_URL ||
+      process.env.NEXT_PUBLIC_VERCEL_PROJECT_PRODUCTION_URL ||
+      process.env.VERCEL_PROJECT_PRODUCTION_URL,
+  );
+  if (fromVercel) return fromVercel;
+
+  if (typeof window !== "undefined" && window.location?.host) {
+    if (!isLoopbackHost(window.location.host)) return window.location.origin;
+  }
+
+  // Local-only fallback (tests / pure local share of the running app)
+  const loopback = (process.env.NEXT_PUBLIC_SITE_URL || "").trim().replace(/\/$/, "");
+  if (loopback) return loopback;
+  return "http://localhost:3000";
+}
+
+/** @deprecated Prefer siteOrigin() — kept for JSON-LD / existing imports. */
+export const SITE = siteOrigin();
 
 // Deterministic line per login (FNV-1a) so a given market always gets the same
 // brag — leads with the flex, leaves room for the user's own comment.
@@ -32,7 +78,7 @@ const hash = (s: string): number => {
 // what the sharer saw (the page re-applies it; an absent/invalid code just
 // falls back to the default).
 export function cardUrl(card: Card): string {
-  const base = `${SITE}/${card.login}`;
+  const base = `${siteOrigin()}/${card.login}`;
   return card.country ? `${base}?country=${encodeURIComponent(card.country)}` : base;
 }
 
@@ -97,7 +143,7 @@ export function shareUrl(card: Card): string {
 // Sharers who want to brag the score type it themselves.
 
 export function duelUrl(challenger: string, opponent: string): string {
-  return `${SITE}/${challenger}/vs/${opponent}`;
+  return `${siteOrigin()}/${challenger}/vs/${opponent}`;
 }
 
 const duelLines = (opponent: string): string[] => [

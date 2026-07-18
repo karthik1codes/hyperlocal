@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { Mic, MicOff } from "lucide-react";
 import type { Card } from "@/lib/scoring/types";
+import { writeCardCache } from "@/hooks/useScout";
 import PlayerCard from "@/components/PlayerCard";
 
 type SpeechRecognitionLike = {
@@ -323,6 +324,21 @@ export default function LocalLabForm({
         setPreview(next);
         setCards((prev) => [next, ...prev].slice(0, 8));
         onCardMinted?.(next.card);
+        // Keep the card in the browser so /local-* works even when Vercel
+        // memory/Redis miss on the next request.
+        writeCardCache(next.card);
+        void fetch("/api/local/persist", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            card: next.card,
+            region: r,
+            topic: t,
+            question: next.question,
+          }),
+        }).catch(() => {
+          /* best-effort */
+        });
         // Auto-open the minted card (skip while live auto-fetch is rotating)
         if (next.sharePath && !auto) {
           router.push(next.sharePath);
@@ -377,7 +393,8 @@ export default function LocalLabForm({
   }, [auto, region, topic, runOnce, appendProgress]);
 
   const share = async (p: Preview) => {
-    const url = new URL(p.sharePath, window.location.origin).toString();
+    const { cardUrl } = await import("@/lib/share");
+    const url = cardUrl(p.card);
     try {
       if (navigator.share) {
         await navigator.share({

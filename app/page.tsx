@@ -3,11 +3,13 @@ import HyperLocalShell from "@/components/HyperLocalShell";
 import { getScoutCount } from "@/lib/analytics";
 import { listRecentLocalCards } from "@/lib/local/store";
 import { SAMPLE_CARDS } from "@/lib/bento/samples";
-import { SITE } from "@/lib/share";
+import { siteOrigin } from "@/lib/share";
 import type { Card } from "@/lib/scoring/types";
 
 // Dynamic so the live scout count + recent local cards stay fresh per load.
 export const dynamic = "force-dynamic";
+
+const SITE = siteOrigin();
 
 const JSON_LD = {
   "@context": "https://schema.org",
