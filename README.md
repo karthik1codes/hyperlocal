@@ -2,59 +2,198 @@
 
 <img src="public/mascot.webp" width="120" alt="Bento Cards mascot">
 
-# Bento Cards
+# Hyperlocal × Bento Cards
 
-**your Bento market, rated out of 99**
+**Rate city-level problems out of 99 — then bet them as live predictions.**
 
-Turn any [Bento.fun](https://bento.fun) betting market into a FIFA-style player card. Scored from live market signals — volume, participants, category, and more.
+Turn a messy local question into a FIFA Ultimate Team–style scout card, backed by local news and a [Bento.fun](https://bento.fun) YES/NO market. Global books miss asymmetric city knowledge; this app mints it.
+
+[![CI](https://github.com/karthik1codes/hyperlocal/actions/workflows/ci.yml/badge.svg)](https://github.com/karthik1codes/hyperlocal/actions/workflows/ci.yml)
 
 </div>
 
 <br/>
 
-## Embed your card
+## Why hyper-local over public markets
 
-Your card lives at a URL. Drop it anywhere — and it re-scouts itself as the market moves.
+Public books (Polymarket-scale) optimize for global volume — elections, crypto, macro. City outcomes rarely list: thin liquidity, messy resolution, no worldwide audience.
 
-```md
-[![My Bento card](https://YOUR_SITE/demo-btc-100k.png)](https://YOUR_SITE/demo-btc-100k)
+**Hyperlocal** opens a focused book around verifiable local news so locals can price what they already know — metro deadlines, campus fees, protest outcomes — before (or without) a national catalog caring.
+
+---
+
+## What it does
+
+| Flow | What you get |
+|------|----------------|
+| **Hyper-local lab** (`/`) | Region + problem → crawl → YES/NO card → shareable FUT plate |
+| **Live markets** (`/markets`) | Scout native Bento duels as rated cards; bet with Free-to-Play credits |
+| **Open as prediction** | Private Bento YES/NO duel from a `local-…` card (~6 min on-chain open floor) |
+| **Club / debate** (`/club`) | Scout agents + LLM debate over your squad |
+
+Without API keys, baked demo markets (`demo-btc-100k`, …) still load so you can click around.
+
+---
+
+## Pipeline
+
+```text
+Region + local problem
+        │
+        ▼
+   OpenAI sharpens crawl query
+        │
+        ▼
+   Chromium / Anakin fetches local news
+   (+ Reddit / X when available)
+        │
+        ▼
+   LLM drafts Will…? YES/NO + options
+        │
+        ▼
+   Score card (PAC–PHY → OVR / 99)
+   + FUT plate art + optional TTS
+        │
+        ▼
+   Share /local-… card
+        │
+        ▼
+   Bento createDuel (private credits)
+   → wait ~6 min → estimateBuy → placeBet
 ```
 
-| | |
-|---|---|
-| **`/<market-id>.png`** | your card, as a live image |
-| **`/<market-id>`** | the full market report |
-| **`?country=XX`** | override the flag (e.g. `?country=DZ`) |
+1. **Input** — City/region + problem (text or speech).
+2. **Sharpen** — OpenAI turns slang into a strong news crawl.
+3. **Fetch** — Local Playwright Chrome by default, or Anakin remote browser (`LOCAL_NEWS_BROWSER=anakin`). Falls back to Anakin Search / HTTP.
+4. **Draft** — Binary prediction grounded in the article.
+5. **Card** — Market-style signals → football stats, finish (Bronze → Icon), shareable art.
+6. **Bento** — Optional live private prediction; bets open after the platform’s start-time floor (~5 min + buffer → **~6 min**).
 
-<br/>
+---
 
-## Setup
+## Quick start
 
 ```bash
 npm install
-cp .env.example .env.local   # if present
-# Required for live markets:
-#   BENTO_BUILDER_API_KEY=...
-# Optional:
-#   NEXT_PUBLIC_SITE_URL=https://your-domain
-#   REDIS_URL=...
-npm run dev
+# Create .env (see below) — optional for demos only
+npx playwright install chromium   # needed for local news crawl
+npm run dev                       # http://localhost:3000
 ```
 
-Without `BENTO_BUILDER_API_KEY`, the app serves baked demo markets (`demo-btc-100k`, `demo-lakers-celtics`, …).
+### Scripts
 
-<br/>
+| Command | Purpose |
+|---------|---------|
+| `npm run dev` | Next.js dev server |
+| `npm run build` | Production build |
+| `npm start` | Serve production build |
+| `npm run lint` | ESLint |
+| `npm test` | Vitest (unit tests in `tests/`) |
+
+Node **20+** recommended.
+
+---
+
+## Environment
+
+Create a `.env` or `.env.local` in the project root. **Never commit secrets.**
+
+### Core (live Bento)
+
+```bash
+BENTO_BUILDER_API_KEY=           # live markets + create/bet
+BENTO_URL=https://…              # optional; defaults to Bento API host
+NEXT_PUBLIC_SITE_URL=http://localhost:3000
+REDIS_URL=                       # optional card cache + counters
+```
+
+### Hyper-local research
+
+```bash
+# LLM draft / plate / TTS (preferred path today)
+OPENAI_API_KEY=
+OPENAI_MODEL=gpt-4o-mini
+OPENAI_IMAGE_MODEL=gpt-image-1
+# OPENAI_TTS_MODEL=tts-1
+# OPENAI_TTS_VOICE=nova
+
+# News browser: local (default) | anakin
+LOCAL_NEWS_BROWSER=local
+# ANAKIN_API_KEY=                # if LOCAL_NEWS_BROWSER=anakin
+# ANAKIN_BROWSER_WS=wss://api.anakin.io/v1/browser-connect
+# LOCAL_NEWS_HEADED=true
+# LOCAL_NEWS_ANAKIN_FALLBACK=true
+
+# Optional Gemini path (legacy / alternate)
+# GEMINI_API_KEY=
+```
+
+### Betting timing
+
+```bash
+# Private market open delay (ms). Clamped to ≥ 6 minutes.
+# BENTO_MARKET_OPEN_DELAY_MS=360000
+```
+
+| Without… | Behavior |
+|----------|----------|
+| `BENTO_BUILDER_API_KEY` | Demo cards only; no live create/bet |
+| `OPENAI_API_KEY` | Template card from news hit (weaker draft/art) |
+| Browser / Anakin | Hyper-local research unavailable |
+
+---
 
 ## How rating works
 
-Six signals from a Bento market map to football stats. Your **overall** is the headline. Raw stats cap at **88** — the 90s are a legacy gate. Position and archetype come from your stat shape.
+Six market signals map to football stats:
 
-Every card walks out in a finish: Bronze → Silver → Gold → In-Form → TOTY → Icon.
+| Stat | Signal (gloss) |
+|------|----------------|
+| **PAC** | Recent betting volume / activity |
+| **SHO** | Total volume / biggest pool |
+| **PAS** | Unique participants / reach |
+| **DRI** | Category / tag range |
+| **DEF** | Engagement depth |
+| **PHY** | Lifetime volume vs age |
 
-<br/>
+- **Overall** is the headline (1–99). Raw stats cap near **88**; the **90s** need legacy/track record.
+- **Position** and **archetype** come from stat shape, not a hand pick.
+- **Finish ladder:** Bronze → Silver → Gold → In-Form → TOTY → Icon.
 
-<div align="center">
+Hyper-local cards use the same plate language after research; native Bento duels re-scout as the book moves (Redis cache ~30 min when configured).
 
-**Built with** Next.js · TypeScript · Tailwind · Redis · [@bento.fun/sdk](https://bento.fun)
+---
 
-</div>
+## Routes (handy)
+
+| Path | Role |
+|------|------|
+| `/` | Hyper-local lab + recent cards |
+| `/markets` | Live Bento market fan |
+| `/[id]` or `/u/[id]` | Card report + bet UI |
+| `/club` | Squad + scout agents |
+| `/club/debate` | Multi-agent debate |
+| `/api/local/research/stream` | SSE research progress |
+| `/api/local/publish` | Open local card as Bento prediction |
+
+Embed-style URLs still work for market ids: `/{id}` (report), card images via `/api/card-image/...`.
+
+---
+
+## Stack
+
+**Next.js 16** · **React 19** · **TypeScript** · **Tailwind 4** · **Vitest** · **Playwright** · **[@bento.fun/sdk](https://bento.fun)** · Redis (optional) · OpenAI · Anakin (optional)
+
+---
+
+## Contributing
+
+See [CONTRIBUTING.md](./CONTRIBUTING.md). Before a PR:
+
+```bash
+npm run lint && npm run build && npm test
+```
+
+## License
+
+[MIT](./LICENSE)
