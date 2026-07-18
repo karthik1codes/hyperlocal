@@ -1,5 +1,9 @@
 import { NextResponse } from "next/server";
-import { getWeblinkUrl, sanitizeReturnUrl } from "@/lib/bento/weblink-auth";
+import {
+  authCallbackUrlFromRequest,
+  getWeblinkUrl,
+  sanitizeReturnUrl,
+} from "@/lib/bento/weblink-auth";
 import { hasBentoCredentials } from "@/lib/bento/config";
 
 export const dynamic = "force-dynamic";
@@ -22,18 +26,10 @@ export async function POST(req: Request) {
       state?: string;
     };
 
+    // Prefer explicit body returnUrl, else the request host — never production
+    // SITE_URL when developing locally (that bounced users to Vercel after sign-in).
     const returnUrl = sanitizeReturnUrl(
-      body.returnUrl ||
-        (() => {
-          const site = process.env.NEXT_PUBLIC_SITE_URL?.replace(/\/$/, "");
-          if (site) return `${site.replace("://localhost", "://127.0.0.1")}/auth/callback`;
-          const host = (req.headers.get("x-forwarded-host") || new URL(req.url).host)
-            .split(",")[0]
-            .trim()
-            .replace(/^localhost(?=:|$)/, "127.0.0.1");
-          const proto = req.headers.get("x-forwarded-proto") || "http";
-          return `${proto}://${host}/auth/callback`;
-        })(),
+      body.returnUrl || authCallbackUrlFromRequest(req),
     );
     const state = body.state || `bento-cards-${Date.now().toString(36)}`;
 

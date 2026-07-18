@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getWeblinkUrl, sanitizeReturnUrl } from "@/lib/bento/weblink-auth";
+import { authCallbackUrlFromRequest, getWeblinkUrl } from "@/lib/bento/weblink-auth";
 import { hasBentoCredentials } from "@/lib/bento/config";
 
 export const dynamic = "force-dynamic";
@@ -21,12 +21,8 @@ export async function GET(req: Request) {
   }
 
   try {
-    const reqUrl = new URL(req.url);
-    // Prefer public site URL; always sanitize localhost → 127.0.0.1 for Bento @IsUrl
-    const site =
-      process.env.NEXT_PUBLIC_SITE_URL?.replace(/\/$/, "") ||
-      `${reqUrl.protocol}//${reqUrl.host}`;
-    const returnUrl = sanitizeReturnUrl(`${site}/auth/callback`);
+    // Use the host the user is on (127.0.0.1 locally) — not NEXT_PUBLIC_SITE_URL
+    const returnUrl = authCallbackUrlFromRequest(req);
     const state = `bento-cards-${crypto.randomUUID()}`;
 
     const { url, state: echoed } = await getWeblinkUrl({ returnUrl, state });
@@ -49,10 +45,11 @@ export async function GET(req: Request) {
   } catch (e) {
     const msg = e instanceof Error ? e.message : "login_failed";
     const dest = new URL("/", req.url);
-    // Keep user on 127.0.0.1 if we started from localhost-sanitized flow
     try {
-      const sanitized = sanitizeReturnUrl(dest.toString());
-      dest.host = new URL(sanitized).host;
+      // Stay on the same host we started from (127.0.0.1 when local)
+      const cb = new URL(authCallbackUrlFromRequest(req));
+      dest.protocol = cb.protocol;
+      dest.host = cb.host;
     } catch {
       /* keep */
     }
