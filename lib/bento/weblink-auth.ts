@@ -25,6 +25,20 @@ export function sanitizeReturnUrl(raw: string): string {
   return u.toString();
 }
 
+/**
+ * Callback URL for weblink auth — always the host the user is browsing
+ * (localhost / preview / production). Never NEXT_PUBLIC_SITE_URL: that env is
+ * for share links and would bounce local sign-in onto production.
+ */
+export function authCallbackUrlFromRequest(req: Request): string {
+  const reqUrl = new URL(req.url);
+  const xfHost = req.headers.get("x-forwarded-host")?.split(",")[0]?.trim();
+  const xfProto = req.headers.get("x-forwarded-proto")?.split(",")[0]?.trim();
+  const host = (xfHost || reqUrl.host).replace(/^localhost(?=:|$)/i, "127.0.0.1");
+  const proto = (xfProto || reqUrl.protocol.replace(":", "") || "http").replace(/:$/, "");
+  return sanitizeReturnUrl(`${proto}://${host}/auth/callback`);
+}
+
 export async function getWeblinkUrl(opts: {
   returnUrl: string;
   state: string;
