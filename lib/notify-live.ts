@@ -67,7 +67,6 @@ export function notifyMarketLive(input: LiveNotifyInput): boolean {
       const n = new Notification(title, {
         body,
         tag: `bento-live-${input.id}`,
-        renotify: true,
       });
       n.onclick = () => {
         try {

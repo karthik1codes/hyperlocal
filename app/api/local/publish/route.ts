@@ -219,26 +219,30 @@ export async function POST(req: Request) {
         };
       } catch {
         // Transient catalog miss on a non-dead local card — don't mint a duplicate
-        if (!existingDead) {
+        const existing = card.market;
+        if (!existingDead && existing) {
           return NextResponse.json({
             ok: true,
             already: true,
-            duelId: card.market.duelId,
+            duelId: existing.duelId,
             card: {
               ...card,
               market: {
-                ...card.market,
-                status: Number(card.market.status) >= 0 ? Number(card.market.status) : 1,
+                ...existing,
+                status: Number(existing.status) >= 0 ? Number(existing.status) : 1,
               },
             },
             login,
             opensInMs: 0,
           });
         }
+        if (!existing) {
+          return NextResponse.json({ error: "Local prediction not found." }, { status: 404 });
+        }
         card = {
           ...card,
           market: {
-            ...card.market,
+            ...existing,
             source: "local",
             duelId: login,
             dbId: login,
@@ -250,10 +254,14 @@ export async function POST(req: Request) {
 
     // Force / dead market: strip old duel so we mint a new one
     if (body.force || existingDead) {
+      const prev = card.market;
+      if (!prev) {
+        return NextResponse.json({ error: "Local prediction not found." }, { status: 404 });
+      }
       card = {
         ...card,
         market: {
-          ...card.market!,
+          ...prev,
           source: "local",
           duelId: login,
           dbId: login,
@@ -262,11 +270,16 @@ export async function POST(req: Request) {
       };
     }
 
-    const question = (card.market.question || card.name).trim();
+    const market = card.market;
+    if (!market) {
+      return NextResponse.json({ error: "Local prediction not found." }, { status: 404 });
+    }
+
+    const question = (market.question || card.name).trim();
     // NEVER use ticking market.endsIn for create lifetime — clock refresh shrinks
     // it and produced short-lived markets that die as status=-1.
     const deadlineAt =
-      card.market.scoutDeadlineAt ||
+      market.scoutDeadlineAt ||
       stored?.deadlineAt ||
       (stored?.createdAt
         ? stored.createdAt + 90 * 86_400_000
@@ -286,9 +299,9 @@ export async function POST(req: Request) {
       token: body.token,
       question,
       // Bento createDuel only accepts sport categories — mapping happens inside createPredictionMarket
-      category: card.market.category || "Hyper-Local",
+      category: market.category || "Hyper-Local",
       description:
-        card.market.description ||
+        market.description ||
         `Hyper-local prediction from ${stored?.region || "local news"}. Origin: ${login}`,
       deadlineDays,
       tags: ["bento", "hyper-local", "prediction", login.slice(0, 40)],
@@ -326,14 +339,14 @@ export async function POST(req: Request) {
       const optimistic = {
         ...card,
         market: {
-          ...card.market,
+          ...market,
           duelId,
           dbId: duelId,
           source: "bento" as const,
           duelType: "prediction",
           options:
-            card.market.options?.length >= 2
-              ? card.market.options
+            market.options?.length >= 2
+              ? market.options
               : ["Yes — the outcome happens", "No — the outcome fails"],
           collateralMode: "credits" as const,
           status: 1,
