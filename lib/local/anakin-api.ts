@@ -165,7 +165,11 @@ export async function summarizeHitWithAnakin(
     }
 
     return hit;
-  } catch {
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    const stack = e instanceof Error ? e.stack : undefined;
+    console.error(`[anakin/summarize] soft-fail: ${msg}`);
+    if (stack) console.error(stack);
     return hit;
   }
 }

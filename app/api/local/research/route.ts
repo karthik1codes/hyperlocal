@@ -39,7 +39,9 @@ export async function POST(req: Request) {
     });
   } catch (e) {
     const message = e instanceof Error ? e.message : "Research failed";
+    const stack = e instanceof Error ? e.stack : undefined;
     console.error("[local/research]", message);
+    if (stack) console.error(stack);
     return NextResponse.json({ error: message }, { status: 400 });
   }
 }

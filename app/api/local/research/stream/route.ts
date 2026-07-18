@@ -1,8 +1,8 @@
-import { createHyperLocalPrediction } from "@/lib/local";
 import type { ResearchProgressEvent } from "@/lib/local/progress";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 120;
+export const runtime = "nodejs";
 
 function sse(data: unknown): string {
   return `data: ${JSON.stringify(data)}\n\n`;
@@ -10,7 +10,7 @@ function sse(data: unknown): string {
 
 /**
  * Live research stream — emits progress steps, then a final `result` or `error`.
- * POST body: { region, topic }
+ * On Vercel this uses Anakin Search / Google News RSS (never local Chrome).
  */
 export async function POST(req: Request) {
   let region = "";
@@ -21,8 +21,11 @@ export async function POST(req: Request) {
     topic = body.topic?.trim() || "";
   } catch {
     return new Response(sse({ type: "error", error: "Invalid JSON body" }), {
-      status: 400,
-      headers: { "Content-Type": "text/event-stream" },
+      status: 200,
+      headers: {
+        "Content-Type": "text/event-stream; charset=utf-8",
+        "Cache-Control": "no-cache, no-transform",
+      },
     });
   }
 
@@ -33,7 +36,13 @@ export async function POST(req: Request) {
         error:
           "Tell us your city/region and a local problem (e.g. Chennai + Metro Phase 2).",
       }),
-      { status: 400, headers: { "Content-Type": "text/event-stream" } },
+      {
+        status: 200,
+        headers: {
+          "Content-Type": "text/event-stream; charset=utf-8",
+          "Cache-Control": "no-cache, no-transform",
+        },
+      },
     );
   }
 
@@ -41,10 +50,15 @@ export async function POST(req: Request) {
     async start(controller) {
       const enc = new TextEncoder();
       const send = (payload: unknown) => {
-        controller.enqueue(enc.encode(sse(payload)));
+        try {
+          controller.enqueue(enc.encode(sse(payload)));
+        } catch {
+          /* client disconnected */
+        }
       };
 
       try {
+        const { createHyperLocalPrediction } = await import("@/lib/local");
         const bundle = await createHyperLocalPrediction({
           region,
           topic,
@@ -75,9 +89,14 @@ export async function POST(req: Request) {
       } catch (e) {
         const message = e instanceof Error ? e.message : "Research failed";
         console.error("[local/research/stream]", message);
+        if (e instanceof Error && e.stack) console.error(e.stack);
         send({ type: "error", error: message });
       } finally {
-        controller.close();
+        try {
+          controller.close();
+        } catch {
+          /* already closed */
+        }
       }
     },
   });

@@ -51,10 +51,19 @@ function pinFeaturedFirst(cards: Card[]): Card[] {
 }
 
 export default async function Home() {
-  const [scoutCount, recentCards] = await Promise.all([
-    getScoutCount(),
-    listRecentLocalCards(8),
-  ]);
+  let scoutCount: number | null = null;
+  let recentCards: Card[] = [];
+  try {
+    [scoutCount, recentCards] = await Promise.all([
+      getScoutCount(),
+      listRecentLocalCards(8),
+    ]);
+  } catch (e) {
+    console.error(
+      "[home] fetch failed — using sample pack:",
+      e instanceof Error ? e.stack || e.message : e,
+    );
+  }
   // Keep a fanned pack on the side even before the first local mint.
   const sideCards = pinFeaturedFirst(
     recentCards.length >= 3

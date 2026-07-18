@@ -47,10 +47,20 @@ export default function BetPanel({ card: initialCard }: { card: Card }) {
 
   const marketWarning = useMemo(() => {
     if (!market || !canPlaceOnChain) return null;
+    const status = Number(market.status ?? 0);
+    if (status < 0) {
+      return `This market is paused/invalid on Bento (status=${status}) — placeBet will fail. Open a live credits market from home.`;
+    }
+    if (status >= 2) return `Market status=${status} looks closed.`;
     const ends = Number(market.endsIn ?? 0);
-    if (ends <= 0) return "This market has ended (endsIn ≤ 0) — bets will fail.";
-    if (ends < 1) return "Market is nearly over — late bets often 500 on testnet.";
-    if (Number(market.status) >= 2) return `Market status=${market.status} looks closed.`;
+    // endsIn is seconds remaining
+    if (ends <= 0) return "This market has ended — bets will fail.";
+    if (ends < 60) {
+      return `Market expires in ${ends}s — late bets usually HTTP 500 on testnet.`;
+    }
+    if (ends < 3600) {
+      return `Only ~${Math.round(ends / 60)} min left — prefer a market with more runway.`;
+    }
     return null;
   }, [market, canPlaceOnChain]);
 
@@ -553,7 +563,7 @@ export default function BetPanel({ card: initialCard }: { card: Card }) {
                 publishing ||
                 busy ||
                 !amount.trim() ||
-                Boolean(marketWarning && /ended|closed/i.test(marketWarning))
+                Boolean(marketWarning && /ended|closed|paused|invalid|expire/i.test(marketWarning))
               }
               onClick={() => void place()}
               className="font-display h-10 shrink-0 rounded-lg bg-brand px-4 text-[13px] tracking-wide text-[#04130a] hover:bg-brand-hi disabled:opacity-60"

@@ -52,11 +52,21 @@ function buildMarketsPack(bento: Card[], local: Card[], limit = 5): Card[] {
 }
 
 export default async function MarketsPage() {
-  const [scoutCount, bentoCards, localCards] = await Promise.all([
-    getScoutCount(),
-    loadHomeCards(12),
-    listRecentLocalCards(4),
-  ]);
+  let scoutCount: number | null = null;
+  let bentoCards: Card[] = [];
+  let localCards: Card[] = [];
+  try {
+    [scoutCount, bentoCards, localCards] = await Promise.all([
+      getScoutCount(),
+      loadHomeCards(12),
+      listRecentLocalCards(4),
+    ]);
+  } catch (e) {
+    console.error(
+      "[markets] fetch failed — using samples:",
+      e instanceof Error ? e.stack || e.message : e,
+    );
+  }
   const cards = buildMarketsPack(bentoCards, localCards, 5);
   return (
     <div className="relative min-h-screen overflow-x-hidden text-ink">

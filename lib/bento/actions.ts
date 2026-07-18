@@ -220,25 +220,22 @@ export async function estimateAndPlaceBet(input: {
     );
   }
 
-  let duel: Awaited<ReturnType<typeof fetchMarket>>;
-  try {
-    duel = await fetchMarket(input.duelId, { userAddress: input.address });
-  } catch (e) {
+  const duel = await fetchMarket(input.duelId, { userAddress: input.address }).catch((e) => {
     throwScout("notfound", `Could not load market ${input.duelId}: ${formatBentoError(e)}`);
+  });
+
+  const { isMarketTradeable } = await import("./tradeable");
+  const tradeable = isMarketTradeable({
+    status: duel.status,
+    endsIn: duel.endsIn,
+    duelType: duel.duelType,
+  });
+  if (!tradeable.ok) {
+    throwScout("invalid", tradeable.reason);
   }
 
   const status = Number(duel.status ?? 0);
-  if (status >= 2) {
-    throwScout(
-      "invalid",
-      `This market is not open for bets (status=${status}). Pick an active market from the home fan.`,
-    );
-  }
-
   const endsIn = Number(duel.endsIn ?? 0);
-  if (Number.isFinite(endsIn) && endsIn <= 0) {
-    throwScout("invalid", "This market has already ended (endsIn ≤ 0).");
-  }
 
   const startRaw = Number(duel.startAt ?? duel.startTime ?? 0);
   if (startRaw > 0) {

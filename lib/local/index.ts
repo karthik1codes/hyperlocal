@@ -138,12 +138,15 @@ export async function createHyperLocalPrediction(input: {
   if (sourceImage) {
     emitProgress(input.onProgress, "card", "Pasting source photo onto card…");
     const embedded = await embedRemoteImageAsDataUrl(sourceImage);
+    // Keep http when the embed is huge — megabyte data: URLs 500 production RSC.
+    const avatarUrl =
+      embedded && embedded.length <= 120_000 ? embedded : sourceImage;
     bundle = {
       ...bundle,
       card: {
         ...bundle.card,
-        // Prefer embedded data URL (CORS-safe). Fall back to http (+ /api/img proxy in UI).
-        avatarUrl: embedded || sourceImage,
+        // Prefer compact embed; else http (+ /api/img proxy in UI).
+        avatarUrl,
         // Don't use AI full-plate when we have a real photo — models often leave
         // a grey silhouette. PlayerCard composites the photo onto the FUT plate.
         cardImageUrl: null,

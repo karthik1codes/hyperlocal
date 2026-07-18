@@ -76,6 +76,15 @@ type Preview = {
   reused?: boolean;
 };
 
+function friendlyFetchError(raw: string, status?: number): string {
+  const t = raw.trim();
+  if (!t) return status ? `Research failed (HTTP ${status}).` : "Research failed.";
+  if (/<!DOCTYPE|<html|This page couldn’t load|__next_error__/i.test(t)) {
+    return "Cloud scrape hit a server error (Chrome isn’t available on Vercel). Retry — we’ll use Google News / Anakin instead.";
+  }
+  return t.length > 280 ? `${t.slice(0, 280)}…` : t;
+}
+
 async function runResearchStream(
   region: string,
   topic: string,
@@ -89,9 +98,10 @@ async function runResearchStream(
     signal,
   });
 
-  if (!res.ok || !res.body) {
+  const contentType = res.headers.get("content-type") || "";
+  if (!res.ok || !res.body || !/text\/event-stream|json/i.test(contentType)) {
     const fallback = await res.text().catch(() => "");
-    throw new Error(fallback || `Research failed (HTTP ${res.status})`);
+    throw new Error(friendlyFetchError(fallback, res.status));
   }
 
   const reader = res.body.getReader();
@@ -142,13 +152,13 @@ async function runResearchStream(
           reused: Boolean(msg.reused),
         };
       } else if (msg.type === "error") {
-        streamError = String(msg.error || "Research failed");
+        streamError = friendlyFetchError(String(msg.error || "Research failed"));
       }
     }
   }
 
   if (streamError) throw new Error(streamError);
-  if (!preview) throw new Error("Stream ended without a card");
+  if (!preview) throw new Error("Stream ended without a card — retry once.");
   return preview;
 }
 
@@ -388,8 +398,9 @@ export default function LocalLabForm({
       {!compact && (
         <p className="mb-6 text-[15px] leading-relaxed text-ink-soft">
           Tell us your <span className="text-ink">city / region</span> and a{" "}
-          <span className="text-ink">hyper-local problem</span>. ChatGPT sharpens it into a
-          strong crawl, then we fetch local news and mint a FUT-style prediction card.
+          <span className="text-ink">hyper-local problem</span>. On production we scrape via{" "}
+          <span className="text-ink">Google News / Anakin</span> (no local Chrome on Vercel),
+          then mint a FUT-style prediction card.
         </p>
       )}
 

@@ -20,6 +20,23 @@ export const isWebKit = (): boolean =>
   typeof navigator !== "undefined" &&
   navigator.vendor === "Apple Computer, Inc.";
 
+/** Readable message from SecurityError / DOMException / empty `{}` throws. */
+export function formatCaptureError(e: unknown): string {
+  if (e instanceof Error) {
+    const msg = (e.message || "").trim();
+    if (msg) return msg;
+    if (e.name && e.name !== "Error") return e.name;
+  }
+  if (typeof e === "string" && e.trim()) return e.trim();
+  if (e && typeof e === "object") {
+    const o = e as { message?: unknown; name?: unknown; reason?: unknown };
+    if (typeof o.message === "string" && o.message.trim()) return o.message.trim();
+    if (typeof o.name === "string" && o.name.trim()) return o.name.trim();
+    if (typeof o.reason === "string" && o.reason.trim()) return o.reason.trim();
+  }
+  return "Image capture failed (often a CORS-tainted photo). Retry, or use the share link.";
+}
+
 function parseGradientStops(gradient: string): { color: string; at: number }[] {
   const start = gradient.indexOf("40%,");
   if (start < 0) return [];
@@ -72,7 +89,11 @@ function bakeAvatar(
   const cover = Math.max(w / src.naturalWidth, h / src.naturalHeight);
   const dw = src.naturalWidth * cover;
   const dh = src.naturalHeight * cover;
-  ctx.drawImage(src, (w - dw) / 2, (h - dh) * 0.2, dw, dh);
+  try {
+    ctx.drawImage(src, (w - dw) / 2, (h - dh) * 0.2, dw, dh);
+  } catch {
+    return null;
+  }
 
   // edge tint over the photo (transparent core, tier colour toward the edges)
   const stops = parseGradientStops(tint);
@@ -139,6 +160,51 @@ function bakeAvatar(
   }
 }
 
+/** Proxy hotlinked images so html-to-image / canvas aren't CORS-tainted. */
+function corsSafeImages(root: HTMLElement) {
+  const origin = typeof location !== "undefined" ? location.origin : "";
+  root.querySelectorAll("img").forEach((img) => {
+    const src = (img.getAttribute("src") || "").trim();
+    if (!src || src.startsWith("data:") || src.startsWith("blob:")) return;
+
+    if (/^https?:\/\//i.test(src)) {
+      const sameOrigin = origin && src.startsWith(origin);
+      if (!sameOrigin && !src.includes("/api/img?")) {
+        img.setAttribute("crossorigin", "anonymous");
+        img.src = `/api/img?u=${encodeURIComponent(src)}`;
+        return;
+      }
+    }
+    // Same-origin /api/img and /cards /badges — still mark CORS for canvas
+    img.setAttribute("crossorigin", "anonymous");
+  });
+}
+
+function bakeAvatarIntoClone(live: HTMLElement, clone: HTMLElement) {
+  const avatar = clone.querySelector<HTMLElement>("[data-bento-avatar]");
+  const srcBox = live.querySelector<HTMLElement>("[data-bento-avatar]");
+  const src = srcBox?.querySelector<HTMLImageElement>("img") ?? null;
+  const tintEl = srcBox?.querySelector<HTMLElement>("img + div") ?? null;
+  const filter = src?.parentElement?.style.filter ?? "";
+  const cardW = srcBox?.offsetWidth ?? 0;
+  if (!avatar || !src || cardW <= 0 || src.naturalWidth <= 0) return;
+
+  const boxW = cardW * 0.68;
+  const boxH = cardW * 0.7;
+  const baked = bakeAvatar(src, boxW, boxH, tintEl?.style.background ?? "");
+  if (!baked) return;
+
+  avatar.style.setProperty("-webkit-mask-image", "none");
+  avatar.style.setProperty("mask-image", "none");
+  const img = document.createElement("img");
+  img.src = baked;
+  img.alt = src.alt;
+  img.style.cssText =
+    `position:absolute;left:${cardW * 0.27}px;top:${cardW * 0.13}px;` +
+    `width:${boxW}px;height:${boxH}px;object-fit:fill;filter:${filter};`;
+  avatar.replaceChildren(img);
+}
+
 export async function renderCardImage<T>(
   node: HTMLElement,
   capture: (target: HTMLElement) => Promise<T>,
@@ -162,36 +228,14 @@ export async function renderCardImage<T>(
     });
   }
 
-  if (isWebKit()) {
-    const avatar = clone.querySelector<HTMLElement>("[data-bento-avatar]");
-    // Measure off the LIVE node (laid out), not the clone (not yet in the DOM).
-    const srcBox = node.querySelector<HTMLElement>("[data-bento-avatar]");
-    const src = srcBox?.querySelector<HTMLImageElement>("img") ?? null;
-    const tintEl = srcBox?.querySelector<HTMLElement>("img + div") ?? null;
-    const filter = src?.parentElement?.style.filter ?? "";
-    if (src?.decode) await src.decode().catch(() => {});
-    // Card width comes from the avatar box (inset:0 of the card) — NOT node,
-    // which on the Story export is the 1080px frame, so the avatar was sized and
-    // positioned against the wrong width (oversized / mispositioned). The box's
-    // left/top/size are fractions of the card, so they scale with cardW.
-    const cardW = srcBox?.offsetWidth ?? 0;
-    if (avatar && src && cardW > 0 && src.naturalWidth > 0) {
-      const boxW = cardW * 0.68;
-      const boxH = cardW * 0.7;
-      const baked = bakeAvatar(src, boxW, boxH, tintEl?.style.background ?? "");
-      if (baked) {
-        avatar.style.setProperty("-webkit-mask-image", "none");
-        avatar.style.setProperty("mask-image", "none");
-        const img = document.createElement("img");
-        img.src = baked;
-        img.alt = src.alt;
-        img.style.cssText =
-          `position:absolute;left:${cardW * 0.27}px;top:${cardW * 0.13}px;` +
-          `width:${boxW}px;height:${boxH}px;object-fit:fill;filter:${filter};`;
-        avatar.replaceChildren(img);
-      }
-    }
-  }
+  // Decode live avatar first so bake can read naturalWidth
+  const liveAvatar = node.querySelector<HTMLImageElement>("[data-bento-avatar] img");
+  if (liveAvatar?.decode) await liveAvatar.decode().catch(() => {});
+
+  // Always bake the feathered avatar into a same-origin data URL when possible —
+  // avoids CSS-mask + CORS failures in html-to-image (not just WebKit).
+  bakeAvatarIntoClone(node, clone);
+  corsSafeImages(clone);
 
   // 0×0 clip holder pinned at the viewport origin: the clone paints (so images
   // decode and html-to-image captures it) but is clipped out of view on screen.
@@ -212,7 +256,14 @@ export async function renderCardImage<T>(
     );
     await nextFrame();
     await nextFrame();
-    if (isWebKit() || opts.transparent) await capture(clone).catch(() => {});
+    // Warm-up pass helps WebKit / transparent exports settle masks & fonts
+    if (isWebKit() || opts.transparent) {
+      try {
+        await capture(clone);
+      } catch {
+        /* ignore warm-up failure; real attempt below */
+      }
+    }
     return await capture(clone);
   } finally {
     holder.remove();

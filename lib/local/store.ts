@@ -61,6 +61,36 @@ export async function saveLocalPrediction(row: StoredLocalPrediction): Promise<v
   }
 }
 
+function parseStoredRow(raw: string): StoredLocalPrediction | null {
+  try {
+    const row = JSON.parse(raw) as StoredLocalPrediction;
+    if (!row?.login || !row?.card?.login) return null;
+    return row;
+  } catch (e) {
+    console.warn("[local/store] corrupt prediction JSON:", (e as Error).message);
+    return null;
+  }
+}
+
+/**
+ * Home/markets fans must not ship multi‑MB data:image payloads through RSC —
+ * that blows the flight payload and surfaces as a production 500.
+ */
+export function slimCardForFan(card: Card): Card {
+  const avatar = (card.avatarUrl || "").trim();
+  const plate = (card.cardImageUrl || "").trim();
+  const slimAvatar =
+    avatar.startsWith("data:") && avatar.length > 6_000
+      ? avatar.startsWith("data:image/svg")
+        ? avatar
+        : ""
+      : avatar;
+  const slimPlate =
+    !plate || (plate.startsWith("data:") && plate.length > 6_000) ? null : plate;
+  if (slimAvatar === avatar && slimPlate === (card.cardImageUrl || null)) return card;
+  return { ...card, avatarUrl: slimAvatar, cardImageUrl: slimPlate };
+}
+
 export async function loadLocalPrediction(loginRaw: string): Promise<StoredLocalPrediction | null> {
   const login = loginRaw.trim().replace(/^@/, "").toLowerCase();
   if (!login.startsWith("local-")) return null;
@@ -70,7 +100,10 @@ export async function loadLocalPrediction(loginRaw: string): Promise<StoredLocal
   if (redis) {
     try {
       const raw = await redis.get(key);
-      if (raw) return JSON.parse(raw) as StoredLocalPrediction;
+      if (raw) {
+        const row = parseStoredRow(raw);
+        if (row) return row;
+      }
     } catch (e) {
       console.warn("[local/store] redis read:", (e as Error).message);
     }
@@ -107,8 +140,15 @@ export async function listRecentLocalCards(limit = 8): Promise<Card[]> {
   for (const login of logins) {
     if (seen.has(login)) continue;
     seen.add(login);
-    const row = await loadLocalPrediction(login);
-    if (row?.card) cards.push(row.card);
+    try {
+      const row = await loadLocalPrediction(login);
+      if (row?.card) cards.push(slimCardForFan(row.card));
+    } catch (e) {
+      console.warn(
+        `[local/store] skip ${login}:`,
+        e instanceof Error ? e.message : e,
+      );
+    }
     if (cards.length >= n) break;
   }
   return cards;

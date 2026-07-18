@@ -1,18 +1,14 @@
 import "server-only";
-import {
-  chromium,
-  type Browser,
-  type BrowserContext,
-  type LaunchOptions,
-  type Page,
-} from "playwright";
+import type { Browser, BrowserContext, LaunchOptions, Page } from "playwright";
 import {
   anakinApiKey,
   anakinBrowserWsUrl,
   hasAnakinCredentials,
+  isServerlessRuntime,
   localAllowAnakinFallback,
   localBrowserHeaded,
   newsBrowserMode,
+  preferLocalBrowser,
 } from "./config";
 import type { LocalNewsHit } from "./types";
 import { emitProgress, type ResearchProgress } from "./progress";
@@ -23,6 +19,11 @@ import {
 } from "./anakin-api";
 
 export type { LocalNewsHit };
+
+async function loadChromium() {
+  const { chromium } = await import("playwright");
+  return chromium;
+}
 
 /** One local browser at a time — prevents Windows spawn EBUSY under auto-fetch. */
 let launchLock: Promise<void> = Promise.resolve();
@@ -105,6 +106,7 @@ async function launchLocalBrowser(
           `Launching ${attempt.label}…`,
           tryN ? `retry ${tryN + 1}` : undefined,
         );
+        const chromium = await loadChromium();
         const browser = await chromium.launch(attempt.options);
         emitProgress(onProgress, "connect", "Local browser ready", attempt.label);
         return browser;
@@ -129,6 +131,7 @@ async function withAnakinPage<T>(
   const apiKey = anakinApiKey();
   if (!apiKey) throw new Error("ANAKIN_API_KEY missing for Anakin mode.");
   emitProgress(onProgress, "connect", "Connecting to Anakin browser…");
+  const chromium = await loadChromium();
   const browser = await chromium.connectOverCDP(anakinBrowserWsUrl(), {
     headers: { "X-API-Key": apiKey },
     timeout: 90_000,
@@ -473,52 +476,89 @@ async function researchViaHttp(input: {
   onProgress?: ResearchProgress;
 }): Promise<LocalNewsHit> {
   const query = `${input.region} ${input.topic}`;
-  emitProgress(input.onProgress, "connect", "Using HTTP news fallback (no browser)…");
+  emitProgress(input.onProgress, "connect", "Using HTTP news scrape (no browser)…");
   const socialPromise = fetchSocialCorroboration(query, input.onProgress);
-  emitProgress(input.onProgress, "search", "Fetching DuckDuckGo HTML…", query.slice(0, 120));
 
-  const searchUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
-  const res = await fetch(searchUrl, {
-    headers: {
-      Accept: "text/html",
-      "User-Agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    },
-    cache: "no-store",
-  });
-  if (!res.ok) throw new Error(`HTTP search failed (${res.status})`);
-  const html = await res.text();
-
-  const linkRe =
-    /<a[^>]+class="[^"]*result__a[^"]*"[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
   const candidates: { title: string; href: string }[] = [];
-  let m: RegExpExecArray | null;
-  while ((m = linkRe.exec(html)) && candidates.length < 6) {
-    let href = m[1] || "";
-    const uddg = href.match(/[?&]uddg=([^&]+)/);
-    if (uddg) {
-      try {
-        href = decodeURIComponent(uddg[1]!);
-      } catch {
-        /* keep */
+
+  // 1) Google News RSS — reliable on Vercel serverless
+  try {
+    emitProgress(input.onProgress, "search", "Fetching Google News RSS…", query.slice(0, 120));
+    const rssUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=en-IN&gl=IN&ceid=IN:en`;
+    const rssRes = await fetch(rssUrl, {
+      headers: { Accept: "application/rss+xml, application/xml, text/xml, */*" },
+      cache: "no-store",
+      signal: AbortSignal.timeout(20_000),
+    });
+    if (rssRes.ok) {
+      const xml = await rssRes.text();
+      const itemRe = /<item>([\s\S]*?)<\/item>/gi;
+      let item: RegExpExecArray | null;
+      while ((item = itemRe.exec(xml)) && candidates.length < 8) {
+        const block = item[1] || "";
+        const title = stripTags(block.match(/<title>([\s\S]*?)<\/title>/i)?.[1] || "");
+        const link = stripTags(block.match(/<link>([\s\S]*?)<\/link>/i)?.[1] || "");
+        const desc = stripTags(block.match(/<description>([\s\S]*?)<\/description>/i)?.[1] || "");
+        if (title.length < 12 || !link.startsWith("http")) continue;
+        candidates.push({ title: title.slice(0, 180), href: link });
+        if (desc && candidates.length === 1) {
+          // stash first description via title side-channel below
+          (candidates[0] as { title: string; href: string; desc?: string }).desc = desc.slice(0, 420);
+        }
       }
     }
-    const title = stripTags(m[2] || "").slice(0, 180);
-    if (!href.startsWith("http") || title.length < 12) continue;
-    if (/duckduckgo\.com/i.test(href)) continue;
-    candidates.push({ title, href });
+  } catch (e) {
+    logResearchTrace("google-news-rss", e);
+  }
+
+  // 2) DuckDuckGo HTML if RSS empty
+  if (!candidates.length) {
+    emitProgress(input.onProgress, "search", "Fetching DuckDuckGo HTML…", query.slice(0, 120));
+    const searchUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
+    const res = await fetch(searchUrl, {
+      headers: {
+        Accept: "text/html",
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+      },
+      cache: "no-store",
+      signal: AbortSignal.timeout(20_000),
+    });
+    if (!res.ok) throw new Error(`HTTP search failed (${res.status})`);
+    const html = await res.text();
+    const linkRe =
+      /<a[^>]+class="[^"]*result__a[^"]*"[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
+    let m: RegExpExecArray | null;
+    while ((m = linkRe.exec(html)) && candidates.length < 6) {
+      let href = m[1] || "";
+      const uddg = href.match(/[?&]uddg=([^&]+)/);
+      if (uddg) {
+        try {
+          href = decodeURIComponent(uddg[1]!);
+        } catch {
+          /* keep */
+        }
+      }
+      const title = stripTags(m[2] || "").slice(0, 180);
+      if (!href.startsWith("http") || title.length < 12) continue;
+      if (/duckduckgo\.com/i.test(href)) continue;
+      candidates.push({ title, href });
+    }
   }
 
   if (!candidates.length) {
-    throw new Error(`No news results for “${query}” (HTTP fallback).`);
+    throw new Error(
+      `No news results for “${query}”. Try a shorter topic (e.g. “Sonam Wangchuk hunger strike”).`,
+    );
   }
 
-  const top = candidates[0]!;
+  const top = candidates[0] as { title: string; href: string; desc?: string };
   emitProgress(input.onProgress, "pick", "Top story selected", top.title.slice(0, 100));
-  emitProgress(input.onProgress, "open", "Fetching article HTML…", top.href.slice(0, 120));
+  emitProgress(input.onProgress, "open", "Fetching article…", top.href.slice(0, 120));
 
   let title = top.title;
-  let summary = `Local coverage on ${input.region}: ${top.title}.`;
+  let summary =
+    top.desc || `Local coverage on ${input.region}: ${top.title}.`;
   let imageUrl: string | null = null;
   let finalUrl = top.href;
 
@@ -553,7 +593,7 @@ async function researchViaHttp(input: {
       imageUrl = absUrl(ogImage?.[1] || null, finalUrl);
     }
   } catch {
-    /* keep */
+    /* keep RSS/DDG snippet */
   }
 
   emitProgress(input.onProgress, "extract", "Story captured");
@@ -571,9 +611,61 @@ async function researchViaHttp(input: {
   };
 }
 
+/** Log full stack so production fetch failures can be traced end-to-end. */
+function logResearchTrace(stage: string, err: unknown): string {
+  const msg = err instanceof Error ? err.message : String(err);
+  const stack = err instanceof Error ? err.stack : undefined;
+  console.error(`[local/research] ${stage}: ${msg}`);
+  if (stack) console.error(stack);
+  return msg;
+}
+
 /**
- * Local Chrome first → Anakin browser → Anakin Search (AI summary) → HTTP.
- * Falls back whenever local crawl fails (launch or empty/broken session).
+ * Anakin browser → Anakin Search → HTTP. Each failure is traced, then we continue.
+ */
+async function researchViaAnakinChain(input: {
+  region: string;
+  topic: string;
+  onProgress?: ResearchProgress;
+}): Promise<LocalNewsHit> {
+  const { region, topic, onProgress } = input;
+
+  if (hasAnakinCredentials()) {
+    try {
+      emitProgress(onProgress, "connect", "Trying Anakin browser…");
+      const hit = await researchViaAnakin({ region, topic, onProgress });
+      return await summarizeHitWithAnakin(hit, onProgress);
+    } catch (e) {
+      const msg = logResearchTrace("anakin-browser", e);
+      emitProgress(
+        onProgress,
+        "connect",
+        "Anakin browser failed — trying Anakin search…",
+        msg.slice(0, 100),
+      );
+    }
+
+    try {
+      return await researchViaAnakinSearch({ region, topic, onProgress });
+    } catch (e) {
+      const msg = logResearchTrace("anakin-search", e);
+      emitProgress(
+        onProgress,
+        "connect",
+        "Anakin search failed — HTTP fallback…",
+        msg.slice(0, 100),
+      );
+    }
+  } else {
+    emitProgress(onProgress, "connect", "No ANAKIN_API_KEY — HTTP fallback…");
+  }
+
+  return researchViaHttp({ region, topic, onProgress });
+}
+
+/**
+ * Local Chrome first (dev only) → Anakin → HTTP.
+ * On Vercel/serverless we never launch Chrome — that 500s the whole route.
  */
 export async function researchHyperLocalNews(input: {
   region: string;
@@ -587,62 +679,69 @@ export async function researchHyperLocalNews(input: {
   }
 
   const mode = newsBrowserMode();
-  if (mode === "anakin") {
-    try {
-      const hit = await researchViaAnakin({ region, topic, onProgress: input.onProgress });
-      return await summarizeHitWithAnakin(hit, input.onProgress);
-    } catch {
-      emitProgress(input.onProgress, "connect", "Anakin browser failed — using Anakin search…");
+
+  // Production / serverless: Anakin Search → HTTP (no Playwright)
+  if (mode === "http" || (isServerlessRuntime() && mode !== "local")) {
+    emitProgress(
+      input.onProgress,
+      "connect",
+      isServerlessRuntime()
+        ? "Cloud scrape (no local Chrome on Vercel)…"
+        : "HTTP news scrape…",
+    );
+    if (hasAnakinCredentials()) {
       try {
-        return await researchViaAnakinSearch({ region, topic, onProgress: input.onProgress });
-      } catch {
-        return researchViaHttp({ region, topic, onProgress: input.onProgress });
+        return await researchViaAnakinChain({ region, topic, onProgress: input.onProgress });
+      } catch (e) {
+        logResearchTrace("serverless-anakin", e);
       }
     }
+    return researchViaHttp({ region, topic, onProgress: input.onProgress });
+  }
+
+  if (mode === "anakin") {
+    return researchViaAnakinChain({ region, topic, onProgress: input.onProgress });
+  }
+
+  // Local machine only
+  if (!preferLocalBrowser()) {
+    return researchViaAnakinChain({ region, topic, onProgress: input.onProgress }).catch(
+      async (e) => {
+        logResearchTrace("anakin-chain", e);
+        return researchViaHttp({ region, topic, onProgress: input.onProgress });
+      },
+    );
   }
 
   try {
     const hit = await researchWithVisibleTabs({ region, topic, onProgress: input.onProgress });
-    // Optional: refine summary via Anakin without spelling out the page
     if (localAllowAnakinFallback() && hasAnakinCredentials()) {
       return await summarizeHitWithAnakin(hit, input.onProgress);
     }
     return hit;
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
+    const msg = logResearchTrace("local-browser", e);
     emitProgress(
       input.onProgress,
       "connect",
       "Local crawl failed — falling back…",
-      msg.slice(0, 80),
+      msg.slice(0, 100),
     );
 
-    if (localAllowAnakinFallback() && hasAnakinCredentials()) {
+    if (localAllowAnakinFallback()) {
       try {
-        emitProgress(input.onProgress, "connect", "Trying Anakin browser…");
-        const hit = await researchViaAnakin({ region, topic, onProgress: input.onProgress });
-        return await summarizeHitWithAnakin(hit, input.onProgress);
-      } catch {
-        try {
-          return await researchViaAnakinSearch({ region, topic, onProgress: input.onProgress });
-        } catch (anakinErr) {
-          emitProgress(
-            input.onProgress,
-            "connect",
-            "Anakin failed — HTTP fallback…",
-            anakinErr instanceof Error ? anakinErr.message.slice(0, 80) : undefined,
-          );
-          return researchViaHttp({ region, topic, onProgress: input.onProgress });
-        }
+        return await researchViaAnakinChain({
+          region,
+          topic,
+          onProgress: input.onProgress,
+        });
+      } catch (chainErr) {
+        logResearchTrace("anakin-chain", chainErr);
       }
     }
 
-    if (isBusyError(e) || /Could not launch Chrome|No search results|No news results/i.test(msg)) {
-      emitProgress(input.onProgress, "connect", "Using HTTP fallback…");
-      return researchViaHttp({ region, topic, onProgress: input.onProgress });
-    }
-
-    throw e;
+    emitProgress(input.onProgress, "connect", "Using HTTP fallback…");
+    return researchViaHttp({ region, topic, onProgress: input.onProgress });
   }
 }
 

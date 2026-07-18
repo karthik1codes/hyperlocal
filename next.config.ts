@@ -7,7 +7,9 @@ const nextConfig: NextConfig = {
   // sharp (a native binary) feathers the embed-card avatar in app/api/card-image.
   // Marking it external loads it from node_modules at runtime instead of bundling
   // it, so the correct platform binary is used on Vercel.
-  serverExternalPackages: ["sharp"],
+  // playwright is optional (local Chrome only). Keep it external so Vercel
+  // doesn't try to bundle browser binaries into the serverless function.
+  serverExternalPackages: ["sharp", "playwright", "playwright-core"],
 
   async rewrites() {
     // Pretty embed URL: /<id>.png -> the card image route. The id charset is

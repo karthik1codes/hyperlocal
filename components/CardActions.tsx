@@ -5,7 +5,7 @@ import { toBlob, toPng } from "html-to-image";
 import { Check, ChevronDown, Copy, Download, ImageDown, Link2, Share2 } from "lucide-react";
 import type { Card } from "@/lib/scoring/types";
 import { cardUrl, intentUrl, nativeSharePayload } from "@/lib/share";
-import { renderCardImage } from "@/lib/capture";
+import { renderCardImage, formatCaptureError } from "@/lib/capture";
 import { useShareActions } from "@/hooks/useShareActions";
 import { XLogo, LinkedInLogo } from "./BrandIcons";
 import { resolveResultTheme } from "./finishTheme";
@@ -13,8 +13,21 @@ import { resolveResultTheme } from "./finishTheme";
 // The on-page card is small, so it captures at 3× to hit print resolution. The
 // story frame is already rendered at its native 1080×1920, so 1× is exact —
 // upscaling it would just bloat the file for no added detail.
-const RENDER_OPTS = { pixelRatio: 3, cacheBust: true } as const;
-const STORY_RENDER_OPTS = { pixelRatio: 1, cacheBust: true } as const;
+const RENDER_OPTS = {
+  pixelRatio: 3,
+  cacheBust: true,
+  useCORS: true,
+  allowTaint: false,
+  // Prefer the clone's computed styles; skip embedding webfonts that can 404
+  // and abort the whole capture on some browsers.
+  skipFonts: false,
+} as const;
+const STORY_RENDER_OPTS = {
+  pixelRatio: 1,
+  cacheBust: true,
+  useCORS: true,
+  allowTaint: false,
+} as const;
 
 // Feedback and progress copy per action — shown on the split button itself
 // (the menu closes as soon as an item is picked, so the button carries the
@@ -173,24 +186,63 @@ export default function CardActions({
       await run();
       finish(id);
     } catch (e) {
-      console.error(`[bento] card ${id} failed:`, e);
-      setError(`${ACTION_COPY[id].name} failed: ${e instanceof Error ? e.message : String(e)}`);
+      const msg = formatCaptureError(e);
+      console.error(`[bento] card ${id} failed:`, msg, e);
+      setError(`${ACTION_COPY[id].name} failed: ${msg}`);
     } finally {
       setBusy(null);
+    }
+  };
+
+  /** Server-rendered PNG when client html-to-image fails (CORS / tainted canvas). */
+  const downloadViaServer = async () => {
+    const res = await fetch(`/${encodeURIComponent(card.login)}.png`, {
+      cache: "no-store",
+    });
+    if (!res.ok) throw new Error(`server render HTTP ${res.status}`);
+    const blob = await res.blob();
+    if (!blob.type.startsWith("image/")) throw new Error("server did not return an image");
+    const url = URL.createObjectURL(blob);
+    try {
+      const a = document.createElement("a");
+      a.download = `${card.login}-bento.png`;
+      a.href = url;
+      a.click();
+    } finally {
+      URL.revokeObjectURL(url);
     }
   };
 
   const downloadPng = () =>
     track("download", async () => {
       const node = targetRef.current;
-      if (!node) return;
-      // renderCardImage awaits fonts and captures an off-screen clone that
-      // carries the bento.fun signature (hidden on the live card).
-      const url = await renderCardImage(node, (n) => toPng(n, RENDER_OPTS));
-      const a = document.createElement("a");
-      a.download = `${card.login}-bento.png`;
-      a.href = url;
-      a.click();
+      if (!node) {
+        await downloadViaServer();
+        return;
+      }
+      try {
+        // renderCardImage awaits fonts and captures an off-screen clone that
+        // carries the bento.fun signature (hidden on the live card).
+        const url = await renderCardImage(node, (n) => toPng(n, RENDER_OPTS));
+        const a = document.createElement("a");
+        a.download = `${card.login}-bento.png`;
+        a.href = url;
+        a.click();
+      } catch (first) {
+        // Retry at 2× then fall back to the OG/server card image route
+        try {
+          const url = await renderCardImage(node, (n) =>
+            toPng(n, { ...RENDER_OPTS, pixelRatio: 2 }),
+          );
+          const a = document.createElement("a");
+          a.download = `${card.login}-bento.png`;
+          a.href = url;
+          a.click();
+        } catch {
+          console.warn("[bento] client capture failed, using server PNG:", formatCaptureError(first));
+          await downloadViaServer();
+        }
+      }
     });
 
   const copyImage = () =>

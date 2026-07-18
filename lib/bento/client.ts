@@ -115,9 +115,12 @@ export async function listMarkets(limit = 8): Promise<PublicDuelSummary[]> {
     const playable = rows.filter((d) => {
       const t = String(d.duelType || "").toLowerCase();
       if (t !== "prediction" && t !== "versus") return false;
+      const status = Number(d.status ?? 0);
+      // status -1 / closed markets 500 on placeBet on testnet
+      if (status !== 0 && status !== 1) return false;
       const ends = Number(d.endsIn ?? 0);
-      // Skip markets that are already over / instantly expiring — they 500 on placeBet
-      if (Number.isFinite(ends) && ends <= 0.05) return false;
+      // endsIn is seconds — skip near-expiry (late bets 500)
+      if (Number.isFinite(ends) && ends < 3600) return false;
       const title = String(d.betString || d.options?.[0] || "").trim();
       // Drop placeholder / junk catalog rows that clutter the markets fan
       if (title.length < 12) return false;
@@ -125,6 +128,8 @@ export async function listMarkets(limit = 8): Promise<PublicDuelSummary[]> {
       if (/^dependency\b/i.test(title)) return false;
       if (/^(test|demo|asdf|xxx|qa)\b/i.test(title)) return false;
       if (/\[demo/i.test(title)) return false;
+      if (/standing ovation/i.test(title)) return false;
+      if (/build on bento/i.test(title)) return false;
       if (/\bqa lifecycle\b/i.test(title)) return false;
       if (/terminator_\d/i.test(title)) return false;
       if (/^i will make \d/i.test(title)) return false;
