@@ -1,0 +1,2 @@
+# Offer the Bug report / Feature request templates, but still allow a blank issue.
+blank_issues_enabled: true
